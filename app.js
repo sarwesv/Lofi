@@ -374,27 +374,61 @@ function assembleTrack(plan, loopBuf) {
 // Done in JS (not audio nodes) so it's cheap and never repeats across loops.
 function addVinylTexture(chans, sr, amount) {
   const n = chans[0].length;
-  const hissGain = 0.006 * amount;
-  const popDensity = 0.00035 * amount;
-  let lp0 = 0, lp1 = 0; // one-pole smoothing for a warmer hiss
-  for (let i = 0; i < n; i++) {
-    const h0 = (Math.random() * 2 - 1);
-    const h1 = (Math.random() * 2 - 1);
-    lp0 += 0.15 * (h0 - lp0);
-    lp1 += 0.15 * (h1 - lp1);
-    chans[0][i] += lp0 * hissGain;
-    chans[1][i] += lp1 * hissGain;
+  const scratch = new Float32Array(n); // reused per channel for the click layer
 
-    if (Math.random() < popDensity) {
-      // short decaying click across a handful of samples
-      const amp = (0.25 + Math.random() * 0.6) * amount * (Math.random() < 0.5 ? -1 : 1);
-      const len = 20 + (Math.random() * 60) | 0;
-      for (let j = 0; j < len && i + j < n; j++) {
-        const env = amp * Math.pow(1 - j / len, 3);
-        chans[0][i + j] += env;
-        chans[1][i + j] += env * (0.7 + Math.random() * 0.6);
+  // Density scales a little with sample rate so the crackle rate is consistent.
+  const k = sr / 44100;
+  const fineDensity = 0.0022 * amount * k;  // constant fizz of tiny clicks
+  const popDensity  = 0.00004 * amount * k; // rare, louder dust pops
+
+  // Each channel gets its own click layer so the crackle spreads across the
+  // stereo field like a real record instead of sitting dead-center.
+  for (let ch = 0; ch < 2; ch++) {
+    const dst = chans[ch];
+    scratch.fill(0);
+
+    for (let i = 0; i < n; i++) {
+      // Fine crackle: many tiny, very short events -> a gentle continuous bed.
+      if (Math.random() < fineDensity) {
+        const r = Math.random();
+        const amp = r * r * 0.05 * (Math.random() < 0.5 ? -1 : 1); // mostly tiny
+        const len = 2 + (Math.random() * 5 | 0);
+        for (let j = 0; j < len && i + j < n; j++) scratch[i + j] += amp * (1 - j / len);
+      }
+      // Dust pops: sparse, a bit longer and louder, but still short (~ms).
+      if (Math.random() < popDensity) {
+        const amp = (0.06 + Math.random() * 0.16) * (Math.random() < 0.5 ? -1 : 1);
+        const len = 5 + (Math.random() * 14 | 0);
+        for (let j = 0; j < len && i + j < n; j++) {
+          const t = 1 - j / len;
+          scratch[i + j] += amp * t * t;
+        }
       }
     }
+
+    // One-pole high-pass (~280 Hz): turns each little step into a crisp,
+    // DC-free bipolar click and strips the low-frequency thump that made the
+    // old pops sound like knocks rather than surface noise.
+    let y = 0, xPrev = 0;
+    for (let i = 0; i < n; i++) {
+      const x = scratch[i];
+      y = 0.96 * (y + x - xPrev);
+      xPrev = x;
+      dst[i] += y;
+    }
+  }
+
+  // Surface hiss: white noise high-passed for an airy floor (not the muffled
+  // rumble a low-pass produced before), independent per channel.
+  const hissGain = 0.004 * amount;
+  let yL = 0, xL = 0, yR = 0, xR = 0;
+  for (let i = 0; i < n; i++) {
+    const wL = Math.random() * 2 - 1;
+    const wR = Math.random() * 2 - 1;
+    yL = 0.85 * (yL + wL - xL); xL = wL;
+    yR = 0.85 * (yR + wR - xR); xR = wR;
+    chans[0][i] += yL * hissGain;
+    chans[1][i] += yR * hissGain;
   }
 }
 
