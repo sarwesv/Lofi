@@ -75,7 +75,9 @@ function pick(rng, arr) { return arr[Math.floor(rng() * arr.length)]; }
 
 // Build a plan describing the whole track: tempo, key, chords per bar, and
 // which drum hits land where. This is deterministic given the seed.
-function composeTrack(seed, moodName, bars) {
+// `targetMinutes` sets the desired length; bars are derived from the tempo
+// and rounded to a whole number of progression loops so it always ends clean.
+function composeTrack(seed, moodName, targetMinutes) {
   const rng = mulberry32(seed);
   const mood = MOODS[moodName];
 
@@ -87,19 +89,33 @@ function composeTrack(seed, moodName, bars) {
   const secPerBeat = 60 / bpm;
   const secPerBar = secPerBeat * 4;
 
-  // Chord for each bar (progression loops).
+  // We render a short internal loop (two full progression cycles) once, then
+  // tile it to reach the requested length. Lofi is loop-based, so this keeps
+  // render time constant no matter how many minutes the user asks for.
+  const loopBars = progression.length * 2; // e.g. 8 bars
+  const loopBody = secPerBar * loopBars;    // seconds of one loop cycle
+  const tail = 2.4;                         // reverb/release tail per loop
+
+  const targetSec = Math.max(15, targetMinutes * 60);
+  const numLoops = Math.max(1, Math.round(targetSec / loopBody));
+  const totalBody = loopBody * numLoops;
+  const duration = totalBody + tail;
+
+  // Chords for the bars inside one loop cycle (the progression loops within it).
   const chordBars = [];
-  for (let b = 0; b < bars; b++) {
+  for (let b = 0; b < loopBars; b++) {
     const [degree, quality] = progression[b % progression.length];
     const chordRoot = (rootSemitone + degree) % 12;
     chordBars.push({ rootPc: chordRoot, quality, degree });
   }
 
   return {
-    seed, moodName, mood, bpm, bars,
+    seed, moodName, mood, bpm,
+    loopBars, loopBody, tail, numLoops, totalBody,
+    totalBars: loopBars * numLoops,
     rootName, rootSemitone, progression, chordBars,
     secPerBeat, secPerBar,
-    duration: secPerBar * bars + 1.5, // small tail for reverb/release
+    duration,
     title: makeTitle(rng),
     rng,
   };
@@ -223,9 +239,11 @@ function playHat(ctx, dest, noiseBuf, t, gainVal, open) {
 
 /* --------------------------- Offline rendering --------------------------- */
 
-async function renderTrack(plan) {
+// Render one loop cycle (plan.loopBars) plus a reverb/release tail. The tail
+// lets us overlap-add successive loops so seams are seamless.
+async function renderLoop(plan) {
   const sampleRate = 44100;
-  const ctx = new OfflineAudioContext(2, Math.ceil(plan.duration * sampleRate), sampleRate);
+  const ctx = new OfflineAudioContext(2, Math.ceil((plan.loopBody + plan.tail) * sampleRate), sampleRate);
   const rng = mulberry32(plan.seed ^ 0x9e3779b9);
 
   // --- master chain: gentle lo-fi lowpass + soft compression + reverb send.
@@ -266,7 +284,7 @@ async function renderTrack(plan) {
   const swing = plan.mood.swing;
   const beat = plan.secPerBeat;
 
-  for (let b = 0; b < plan.bars; b++) {
+  for (let b = 0; b < plan.loopBars; b++) {
     const barStart = b * plan.secPerBar;
     const chord = plan.chordBars[b];
     const intervals = CHORDS[chord.quality];
@@ -316,11 +334,68 @@ async function renderTrack(plan) {
     }
   }
 
-  // --- Vinyl crackle + tape hiss across the whole track ---
-  addVinylCrackle(ctx, master, plan.duration, plan.mood.crackle);
+  return await ctx.startRendering();
+}
 
-  const rendered = await ctx.startRendering();
-  return rendered;
+// Tile the rendered loop to the requested length using overlap-add so the
+// reverb/release tail of each loop flows into the next, then lay continuous
+// (non-repeating) tape hiss and vinyl crackle over the whole thing.
+function assembleTrack(plan, loopBuf) {
+  const sr = loopBuf.sampleRate;
+  const totalSamples = Math.ceil(plan.duration * sr);
+  const hop = Math.round(plan.loopBody * sr); // advance per loop (body only)
+  const chans = [new Float32Array(totalSamples), new Float32Array(totalSamples)];
+
+  for (let k = 0; k < plan.numLoops; k++) {
+    const off = k * hop;
+    for (let ch = 0; ch < 2; ch++) {
+      const src = loopBuf.getChannelData(ch);
+      const dst = chans[ch];
+      const n = Math.min(src.length, totalSamples - off);
+      for (let i = 0; i < n; i++) dst[off + i] += src[i];
+    }
+  }
+
+  addVinylTexture(chans, sr, plan.mood.crackle);
+
+  // Soft-clip to keep any overlap peaks in bounds, then build the AudioBuffer.
+  for (let ch = 0; ch < 2; ch++) {
+    const d = chans[ch];
+    for (let i = 0; i < d.length; i++) d[i] = Math.tanh(d[i] * 1.05) * 0.96;
+  }
+
+  const out = new AudioBuffer({ length: totalSamples, sampleRate: sr, numberOfChannels: 2 });
+  out.copyToChannel(chans[0], 0);
+  out.copyToChannel(chans[1], 1);
+  return out;
+}
+
+// JS-generated tape hiss + random vinyl pops written straight into the mix.
+// Done in JS (not audio nodes) so it's cheap and never repeats across loops.
+function addVinylTexture(chans, sr, amount) {
+  const n = chans[0].length;
+  const hissGain = 0.006 * amount;
+  const popDensity = 0.00035 * amount;
+  let lp0 = 0, lp1 = 0; // one-pole smoothing for a warmer hiss
+  for (let i = 0; i < n; i++) {
+    const h0 = (Math.random() * 2 - 1);
+    const h1 = (Math.random() * 2 - 1);
+    lp0 += 0.15 * (h0 - lp0);
+    lp1 += 0.15 * (h1 - lp1);
+    chans[0][i] += lp0 * hissGain;
+    chans[1][i] += lp1 * hissGain;
+
+    if (Math.random() < popDensity) {
+      // short decaying click across a handful of samples
+      const amp = (0.25 + Math.random() * 0.6) * amount * (Math.random() < 0.5 ? -1 : 1);
+      const len = 20 + (Math.random() * 60) | 0;
+      for (let j = 0; j < len && i + j < n; j++) {
+        const env = amp * Math.pow(1 - j / len, 3);
+        chans[0][i + j] += env;
+        chans[1][i + j] += env * (0.7 + Math.random() * 0.6);
+      }
+    }
+  }
 }
 
 // swing helper — proportion of an eighth note to delay off-beats by.
@@ -336,37 +411,6 @@ function makeImpulseResponse(ctx, seconds, decay) {
     }
   }
   return ir;
-}
-
-function addVinylCrackle(ctx, dest, duration, amount) {
-  // Continuous soft hiss.
-  const hissBuf = makeNoiseBuffer(ctx, duration);
-  const hiss = ctx.createBufferSource();
-  hiss.buffer = hissBuf;
-  const hf = ctx.createBiquadFilter();
-  hf.type = "bandpass"; hf.frequency.value = 4000; hf.Q.value = 0.6;
-  const hg = ctx.createGain();
-  hg.gain.value = 0.006 * amount;
-  hiss.connect(hf).connect(hg).connect(dest);
-  hiss.start(0);
-
-  // Random pops/crackle.
-  const crackleBuf = ctx.createBuffer(1, Math.floor(ctx.sampleRate * duration), ctx.sampleRate);
-  const data = crackleBuf.getChannelData(0);
-  const density = 0.0006 * amount;
-  for (let i = 0; i < data.length; i++) {
-    if (Math.random() < density) {
-      data[i] = (Math.random() * 2 - 1) * (0.3 + Math.random() * 0.7);
-    }
-  }
-  const crackle = ctx.createBufferSource();
-  crackle.buffer = crackleBuf;
-  const cf = ctx.createBiquadFilter();
-  cf.type = "highpass"; cf.frequency.value = 1500;
-  const cg = ctx.createGain();
-  cg.gain.value = 0.5 * amount;
-  crackle.connect(cf).connect(cg).connect(dest);
-  crackle.start(0);
 }
 
 /* ------------------------------ WAV encoder ------------------------------ */
@@ -417,7 +461,8 @@ const els = {
   title: document.getElementById("trackTitle"),
   meta: document.getElementById("trackMeta"),
   mood: document.getElementById("moodSelect"),
-  length: document.getElementById("lengthSelect"),
+  length: document.getElementById("lengthRange"),
+  lenLabel: document.getElementById("lenLabel"),
   vinyl: document.getElementById("vinyl"),
   progressWrap: document.getElementById("progressWrap"),
   progressBar: document.getElementById("progressBar"),
@@ -435,6 +480,55 @@ let state = {
   playing: false,
   rafId: 0,
 };
+
+/* ------------------------------ GSAP anims ------------------------------- */
+// All motion is driven by GSAP: page entrance, the continuously spinning
+// record, the tonearm drop, drifting stars, and interaction feedback.
+
+const anim = {
+  spin: null,   // infinite disc-rotation tween (paused when not playing)
+  drift: null,  // background star drift
+};
+
+function initAnimations() {
+  gsap.set(".vinyl-disc", { transformOrigin: "50% 50%" });
+
+  // Record spins forever once started; we play/pause it with playback.
+  anim.spin = gsap.to(".vinyl-disc", {
+    rotation: 360, duration: 4, ease: "none", repeat: -1,
+  });
+  anim.spin.pause();
+
+  // Slow parallax drift for the starfield.
+  anim.drift = gsap.to(".stars", {
+    yPercent: 12, duration: 24, ease: "sine.inOut", repeat: -1, yoyo: true,
+  });
+
+  // Entrance timeline.
+  gsap.timeline({ defaults: { ease: "power3.out" } })
+    .from(".badge", { y: -18, opacity: 0, duration: 0.6 })
+    .from("h1", { y: 24, opacity: 0, duration: 0.7 }, "-=0.3")
+    .from(".tagline", { y: 18, opacity: 0, duration: 0.6 }, "-=0.4")
+    .from(".vinyl", { scale: 0.85, opacity: 0, duration: 0.7, ease: "back.out(1.6)" }, "-=0.3")
+    .from(".panel > *", { y: 20, opacity: 0, duration: 0.5, stagger: 0.07 }, "-=0.4");
+}
+
+function armDown() {
+  gsap.to(".vinyl-arm", { rotation: -8, duration: 0.5, ease: "power2.out" });
+}
+function armUp() {
+  gsap.to(".vinyl-arm", { rotation: -28, duration: 0.5, ease: "power2.inOut" });
+}
+function spinStart() { anim.spin.play(); armDown(); }
+function spinStop() { anim.spin.pause(); armUp(); }
+
+// A quick tactile bounce for the record + a status pop when generating.
+function generatePulse() {
+  gsap.fromTo(".vinyl", { scale: 0.94 }, { scale: 1, duration: 0.6, ease: "elastic.out(1, 0.5)" });
+}
+function revealTrack() {
+  gsap.fromTo(".now-playing", { opacity: 0.3, y: 8 }, { opacity: 1, y: 0, duration: 0.5, ease: "power2.out" });
+}
 
 function fmtTime(s) {
   s = Math.max(0, s);
@@ -454,24 +548,26 @@ async function generate() {
   els.play.disabled = true;
   els.download.disabled = true;
   setStatus("Composing & rendering… 🎛️", "working");
+  generatePulse();
 
   const seed = (Math.random() * 0xffffffff) >>> 0;
   const mood = els.mood.value;
-  const bars = parseInt(els.length.value, 10);
+  const minutes = parseFloat(els.length.value);
 
   // Let the UI paint the "working" state before the heavy render.
   await new Promise((r) => setTimeout(r, 30));
 
   try {
-    const plan = composeTrack(seed, mood, bars);
-    const buffer = await renderTrack(plan);
+    const plan = composeTrack(seed, mood, minutes);
+    const loopBuf = await renderLoop(plan);
+    const buffer = assembleTrack(plan, loopBuf);
     state.buffer = buffer;
     state.plan = plan;
     state.offset = 0;
 
     els.title.textContent = plan.title;
     els.meta.textContent =
-      `${plan.rootName} · ${moodLabel(mood)} · ${plan.bpm} BPM · ${bars} bars`;
+      `${plan.rootName} · ${moodLabel(mood)} · ${plan.bpm} BPM · ${plan.totalBars} bars`;
     els.totTime.textContent = fmtTime(buffer.duration);
     els.curTime.textContent = "0:00";
     els.progressBar.style.width = "0%";
@@ -479,6 +575,7 @@ async function generate() {
     els.play.disabled = false;
     els.download.disabled = false;
     setStatus("Fresh beat ready — hit play or download. ✨", "done");
+    revealTrack();
   } catch (err) {
     console.error(err);
     setStatus("Something went wrong while rendering. Check the console.", "");
@@ -516,7 +613,7 @@ function startPlayback(fromOffset) {
   state.playing = true;
   els.playIco.textContent = "⏸";
   els.playLabel.textContent = "Pause";
-  els.vinyl.classList.add("spin");
+  spinStart();
   tick();
 }
 
@@ -528,7 +625,7 @@ function stopPlayback() {
   state.playing = false;
   els.playIco.textContent = "▶";
   els.playLabel.textContent = "Play";
-  els.vinyl.classList.remove("spin");
+  spinStop();
   cancelAnimationFrame(state.rafId);
 }
 
@@ -590,6 +687,12 @@ function download() {
 
 /* ------------------------------- Events ---------------------------------- */
 
+function updateLenLabel() {
+  els.lenLabel.textContent = fmtTime(parseFloat(els.length.value) * 60);
+}
+els.length.addEventListener("input", updateLenLabel);
+updateLenLabel();
+
 els.generate.addEventListener("click", generate);
 els.play.addEventListener("click", togglePlay);
 els.download.addEventListener("click", download);
@@ -599,3 +702,10 @@ document.addEventListener("keydown", (e) => {
   if (e.code === "Space" && state.buffer) { e.preventDefault(); togglePlay(); }
   if (e.code === "KeyG") generate();
 });
+
+// Kick off GSAP animations once everything is parsed.
+if (window.gsap) {
+  initAnimations();
+} else {
+  window.addEventListener("load", () => window.gsap && initAnimations());
+}
