@@ -17,30 +17,9 @@ no uploads, no dependencies.
 - **⬇ Download WAV** — the track is rendered offline and encoded to a 16-bit WAV
   you can keep.
 
-Keyboard shortcuts: `G` to generate, `Space` to play/pause.
+## Running
 
-## 🚀 Run locally
-
-It's just static files — open `index.html`, or serve the folder:
-
-```bash
-python3 -m http.server 8000
-# then visit http://localhost:8000
-```
-
-## 🌐 Deploy to GitHub Pages
-
-This repo ships with a workflow (`.github/workflows/deploy.yml`) that publishes
-the site on every push to the default branch. To enable it:
-
-1. Go to **Settings → Pages**.
-2. Under **Build and deployment → Source**, choose **GitHub Actions**.
-
-That's it — your site will be live at `https://<user>.github.io/<repo>/`.
-
-Alternatively, use the classic method: **Settings → Pages → Deploy from a
-branch**, pick your branch and the `/ (root)` folder.
-
+Go to Sarwesv.github.io/Lofi
 ## 🧠 How it works
 
 `app.js` builds a deterministic composition plan from a random seed
