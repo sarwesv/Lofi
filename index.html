@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Lo-Fi Generator · Random Chill Beats</title>
+  <meta name="description" content="Randomly generate a lo-fi hip-hop track in your browser and download it as a WAV. No servers, no uploads — pure Web Audio." />
+  <link rel="stylesheet" href="style.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎧</text></svg>" />
+</head>
+<body>
+  <div class="stars"></div>
+
+  <main class="app">
+    <header class="hero">
+      <div class="badge">🎧 web audio · no uploads</div>
+      <h1>Lo-Fi <span>Generator</span></h1>
+      <p class="tagline">Roll the dice on a brand-new chill beat — jazzy chords, a lazy bassline, dusty drums and vinyl crackle. Then take it with you.</p>
+    </header>
+
+    <section class="deck">
+      <div class="vinyl" id="vinyl" aria-hidden="true">
+        <div class="vinyl-disc">
+          <div class="vinyl-grooves"></div>
+          <div class="vinyl-label"><span>LO-FI</span></div>
+        </div>
+        <div class="vinyl-arm"></div>
+      </div>
+
+      <div class="panel">
+        <div class="now-playing">
+          <div class="np-label">now playing</div>
+          <div class="np-title" id="trackTitle">— press generate —</div>
+          <div class="np-meta" id="trackMeta">random seed · bpm · key</div>
+        </div>
+
+        <div class="progress" id="progressWrap">
+          <div class="progress-bar" id="progressBar"></div>
+        </div>
+        <div class="time-row">
+          <span id="curTime">0:00</span>
+          <span id="totTime">0:00</span>
+        </div>
+
+        <div class="controls">
+          <button id="generateBtn" class="btn btn-primary">
+            <span class="btn-ico">🎲</span> Generate
+          </button>
+          <button id="playBtn" class="btn" disabled>
+            <span class="btn-ico" id="playIco">▶</span> <span id="playLabel">Play</span>
+          </button>
+          <button id="downloadBtn" class="btn" disabled>
+            <span class="btn-ico">⬇</span> Download WAV
+          </button>
+        </div>
+
+        <div class="options">
+          <label class="opt">
+            <span>Mood</span>
+            <select id="moodSelect">
+              <option value="chill">Chill</option>
+              <option value="sleepy">Sleepy</option>
+              <option value="jazzy">Jazzy</option>
+              <option value="rainy">Rainy</option>
+            </select>
+          </label>
+          <label class="opt">
+            <span>Length</span>
+            <select id="lengthSelect">
+              <option value="8">8 bars</option>
+              <option value="16" selected>16 bars</option>
+              <option value="24">24 bars</option>
+              <option value="32">32 bars</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="status" id="status">Ready when you are.</div>
+      </div>
+    </section>
+
+    <footer class="foot">
+      <span>Everything is generated & rendered locally in your browser.</span>
+    </footer>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
