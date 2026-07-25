@@ -494,7 +494,10 @@ const els = {
   status: document.getElementById("status"),
   title: document.getElementById("trackTitle"),
   meta: document.getElementById("trackMeta"),
-  mood: document.getElementById("moodSelect"),
+  moodDropdown: document.getElementById("moodDropdown"),
+  moodTrigger: document.getElementById("moodTrigger"),
+  moodMenu: document.getElementById("moodMenu"),
+  moodCurrent: document.getElementById("moodCurrent"),
   length: document.getElementById("lengthRange"),
   lenLabel: document.getElementById("lenLabel"),
   vinyl: document.getElementById("vinyl"),
@@ -585,7 +588,7 @@ async function generate() {
   generatePulse();
 
   const seed = (Math.random() * 0xffffffff) >>> 0;
-  const mood = els.mood.value;
+  const mood = els.moodDropdown.dataset.value;
   const minutes = parseFloat(els.length.value);
 
   // Let the UI paint the "working" state before the heavy render.
@@ -727,12 +730,44 @@ function updateLenLabel() {
 els.length.addEventListener("input", updateLenLabel);
 updateLenLabel();
 
+/* ---------------------- Custom themed mood dropdown ---------------------- */
+
+function openMood() {
+  els.moodDropdown.classList.add("open");
+  els.moodTrigger.setAttribute("aria-expanded", "true");
+}
+function closeMood() {
+  els.moodDropdown.classList.remove("open");
+  els.moodTrigger.setAttribute("aria-expanded", "false");
+}
+function selectMood(value, label) {
+  els.moodDropdown.dataset.value = value;
+  els.moodCurrent.textContent = label;
+  els.moodMenu.querySelectorAll(".dd-opt").forEach((o) =>
+    o.classList.toggle("selected", o.dataset.value === value));
+}
+
+els.moodTrigger.addEventListener("click", (e) => {
+  e.stopPropagation();
+  els.moodDropdown.classList.contains("open") ? closeMood() : openMood();
+});
+els.moodMenu.querySelectorAll(".dd-opt").forEach((opt) => {
+  opt.addEventListener("click", () => {
+    selectMood(opt.dataset.value, opt.textContent);
+    closeMood();
+  });
+});
+document.addEventListener("click", (e) => {
+  if (!els.moodDropdown.contains(e.target)) closeMood();
+});
+
 els.generate.addEventListener("click", generate);
 els.play.addEventListener("click", togglePlay);
 els.download.addEventListener("click", download);
 els.progressWrap.addEventListener("click", (e) => seek(e.clientX));
 
 document.addEventListener("keydown", (e) => {
+  if (e.code === "Escape") closeMood();
   if (e.code === "Space" && state.buffer) { e.preventDefault(); togglePlay(); }
   if (e.code === "KeyG") generate();
 });

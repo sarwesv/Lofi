@@ -55,15 +55,21 @@
         </div>
 
         <div class="options">
-          <label class="opt">
+          <div class="opt">
             <span>Mood</span>
-            <select id="moodSelect">
-              <option value="chill">Chill</option>
-              <option value="sleepy">Sleepy</option>
-              <option value="jazzy">Jazzy</option>
-              <option value="rainy">Rainy</option>
-            </select>
-          </label>
+            <div class="dropdown" id="moodDropdown" data-value="chill">
+              <button type="button" class="dd-trigger" id="moodTrigger" aria-haspopup="listbox" aria-expanded="false">
+                <span id="moodCurrent">Chill</span>
+                <span class="dd-arrow">▾</span>
+              </button>
+              <ul class="dd-menu" id="moodMenu" role="listbox" aria-label="Mood">
+                <li role="option" data-value="chill" class="dd-opt selected">Chill</li>
+                <li role="option" data-value="sleepy" class="dd-opt">Sleepy</li>
+                <li role="option" data-value="jazzy" class="dd-opt">Jazzy</li>
+                <li role="option" data-value="rainy" class="dd-opt">Rainy</li>
+              </ul>
+            </div>
+          </div>
           <label class="opt">
             <span>Length · <b id="lenLabel">2:00</b></span>
             <input type="range" id="lengthRange" min="0.5" max="6" step="0.05" value="2" />
