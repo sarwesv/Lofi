@@ -919,58 +919,49 @@ const LEGO_PALETTES = {
   red:    { name: "red",    top: "#E3000B", left: "#B80008", right: "#8C0005", studTop: "#FF2E36", studSide: "#B80008" },
 };
 
-const legoState = {
-  active: false,
-  canvas: null,
-  ctx: null,
-  bricks: [],
-  noiseTime: 0,
-  rafId: 0,
-  timeline: null,
-};
+// Offscreen Sprite Cache for 60 FPS Rendering
+const LEGO_SPRITES = {};
 
-function initLegoCanvas() {
-  legoState.canvas = document.getElementById("legoCanvas");
-  if (legoState.canvas) {
-    legoState.ctx = legoState.canvas.getContext("2d");
-  }
-}
-
-// Render a 2.5D Isometric 2x2 Lego Brick with 4 studs
-function draw2x2LegoBrick(ctx, x, y, size, brickH, palette, scale = 1, alpha = 1) {
-  if (alpha <= 0.01 || scale <= 0.01) return;
-
-  // Guard against missing palette
-  const pal = (palette && palette.top) ? palette : LEGO_PALETTES.blue;
-
-  ctx.save();
-  ctx.translate(x, y);
-  ctx.scale(scale, scale);
-  ctx.globalAlpha = alpha;
-
+function createLegoSprite(palette, size = 18, brickH = 12) {
+  const offCanvas = document.createElement("canvas");
+  const pad = 6;
   const w = size;
   const h = size * 0.5;
   const bh = brickH;
+  const studH = 5;
+
+  const dpr = window.devicePixelRatio || 1;
+  const widthPx = (w * 2 + pad * 2);
+  const heightPx = (h * 2 + bh + studH * 2 + pad * 2);
+
+  offCanvas.width = Math.ceil(widthPx * dpr);
+  offCanvas.height = Math.ceil(heightPx * dpr);
+  const ctx = offCanvas.getContext("2d");
+  ctx.scale(dpr, dpr);
+
+  const cx = w + pad;
+  const cy = h + studH + pad;
+  const pal = palette;
 
   // Top Face (Rhombus)
   ctx.beginPath();
-  ctx.moveTo(0, -h);
-  ctx.lineTo(w, 0);
-  ctx.lineTo(0, h);
-  ctx.lineTo(-w, 0);
+  ctx.moveTo(cx, cy - h);
+  ctx.lineTo(cx + w, cy);
+  ctx.lineTo(cx, cy + h);
+  ctx.lineTo(cx - w, cy);
   ctx.closePath();
   ctx.fillStyle = pal.top;
   ctx.fill();
-  ctx.strokeStyle = "rgba(0, 0, 0, 0.06)";
+  ctx.strokeStyle = "rgba(0, 0, 0, 0.08)";
   ctx.lineWidth = 0.8;
   ctx.stroke();
 
   // Left Face
   ctx.beginPath();
-  ctx.moveTo(-w, 0);
-  ctx.lineTo(0, h);
-  ctx.lineTo(0, h + bh);
-  ctx.lineTo(-w, bh);
+  ctx.moveTo(cx - w, cy);
+  ctx.lineTo(cx, cy + h);
+  ctx.lineTo(cx, cy + h + bh);
+  ctx.lineTo(cx - w, cy + bh);
   ctx.closePath();
   ctx.fillStyle = pal.left;
   ctx.fill();
@@ -978,28 +969,27 @@ function draw2x2LegoBrick(ctx, x, y, size, brickH, palette, scale = 1, alpha = 1
 
   // Right Face
   ctx.beginPath();
-  ctx.moveTo(0, h);
-  ctx.lineTo(w, 0);
-  ctx.lineTo(w, bh);
-  ctx.lineTo(0, h + bh);
+  ctx.moveTo(cx, cy + h);
+  ctx.lineTo(cx + w, cy);
+  ctx.lineTo(cx + w, cy + bh);
+  ctx.lineTo(cx, cy + h + bh);
   ctx.closePath();
   ctx.fillStyle = pal.right;
   ctx.fill();
   ctx.stroke();
 
-  // Draw 4 Studs on top of 2x2 Brick
+  // 4 Studs
   const studR = w * 0.22;
-  const studH = 4;
   const studOffsets = [
-    { x: 0,        y: -h * 0.48 }, // top
-    { x: -w * 0.48, y: 0 },        // left
-    { x: w * 0.48,  y: 0 },        // right
-    { x: 0,        y: h * 0.48 },  // bottom
+    { x: 0,        y: -h * 0.48 },
+    { x: -w * 0.48, y: 0 },
+    { x: w * 0.48,  y: 0 },
+    { x: 0,        y: h * 0.48 },
   ];
 
   studOffsets.forEach((off) => {
-    const sx = off.x;
-    const sy = off.y - h * 0.08;
+    const sx = cx + off.x;
+    const sy = cy + off.y - h * 0.08;
 
     // Stud Side Cylinder
     ctx.beginPath();
@@ -1024,48 +1014,76 @@ function draw2x2LegoBrick(ctx, x, y, size, brickH, palette, scale = 1, alpha = 1
     ctx.stroke();
   });
 
-  ctx.restore();
+  return { canvas: offCanvas, cx, cy, widthPx, heightPx };
+}
+
+function initLegoSprites() {
+  if (LEGO_SPRITES.blue) return;
+  LEGO_SPRITES.blue = createLegoSprite(LEGO_PALETTES.blue, 18, 12);
+  LEGO_SPRITES.yellow = createLegoSprite(LEGO_PALETTES.yellow, 18, 12);
+  LEGO_SPRITES.red = createLegoSprite(LEGO_PALETTES.red, 18, 12);
+}
+
+const legoState = {
+  active: false,
+  canvas: null,
+  ctx: null,
+  bricks: [],
+  noiseTime: 0,
+  rafId: 0,
+  timeline: null,
+};
+
+function initLegoCanvas() {
+  legoState.canvas = document.getElementById("legoCanvas");
+  if (legoState.canvas) {
+    const dpr = window.devicePixelRatio || 1;
+    legoState.canvas.width = 540 * dpr;
+    legoState.canvas.height = 420 * dpr;
+    legoState.ctx = legoState.canvas.getContext("2d");
+    legoState.ctx.scale(dpr, dpr);
+  }
 }
 
 // Map layer elevation height to classic Lego color strata (Blue -> Yellow -> Red)
-function getStrataPalette(l) {
-  if (l <= 1) return LEGO_PALETTES.blue;
-  if (l <= 3) return LEGO_PALETTES.yellow;
-  return LEGO_PALETTES.red;
+function getStrataPaletteName(l) {
+  if (l <= 1) return "blue";
+  if (l <= 3) return "yellow";
+  return "red";
 }
 
 // Generate smooth Perlin-guided wave terrain grid
 function generateLegoWaveGrid(noiseOffset) {
   const targets = [];
-  const gridW = 12;
-  const gridH = 12;
-  const tileW = 16;
-  const tileH = 8;
-  const brickH = 11;
+  const gridW = 10;
+  const gridH = 10;
+  const tileW = 18;
+  const tileH = 9;
+  const brickH = 12;
 
   for (let gx = 0; gx < gridW; gx++) {
     for (let gy = 0; gy < gridH; gy++) {
       let n = 0;
       if (window.Perlin) {
-        n = window.Perlin.noise3D(gx * 0.18, gy * 0.18, noiseOffset);
+        n = window.Perlin.noise3D(gx * 0.22, gy * 0.22, noiseOffset);
       } else {
-        n = Math.sin(gx * 0.4 + noiseOffset) * Math.cos(gy * 0.4 + noiseOffset);
+        n = Math.sin(gx * 0.5 + noiseOffset) * Math.cos(gy * 0.5 + noiseOffset);
       }
 
       // Smooth height levels (1 to 5 layers) creating continuous wave curves
-      const height = Math.floor((n + 1) * 0.5 * 4.5) + 1;
+      const height = Math.floor((n + 1) * 0.5 * 4.2) + 1;
 
       for (let l = 0; l < height; l++) {
         const isoX = (gx - gy) * tileW;
         const isoY = (gx + gy) * tileH - l * (brickH - 1.5);
-        const pal = getStrataPalette(l);
+        const colorName = getStrataPaletteName(l);
 
         targets.push({
           id: `${gx}_${gy}_${l}`,
           gx, gy, l,
           targetIsoX: isoX,
           targetIsoY: isoY,
-          palette: pal,
+          colorName,
         });
       }
     }
@@ -1075,6 +1093,7 @@ function generateLegoWaveGrid(noiseOffset) {
 }
 
 function startLegoAnimationLoop() {
+  initLegoSprites();
   if (!legoState.canvas) initLegoCanvas();
   if (!legoState.ctx) return;
 
@@ -1085,8 +1104,10 @@ function startLegoAnimationLoop() {
 
   const canvas = legoState.canvas;
   const ctx = legoState.ctx;
-  const centerX = canvas.width / 2;
-  const centerY = canvas.height / 2 + 40;
+  const displayW = 540;
+  const displayH = 420;
+  const centerX = displayW / 2;
+  const centerY = displayH / 2 + 35;
 
   legoState.noiseTime = Math.random() * 100;
   const targets = generateLegoWaveGrid(legoState.noiseTime);
@@ -1098,10 +1119,10 @@ function startLegoAnimationLoop() {
       gy: t.gy,
       l: t.l,
       isoX: t.targetIsoX,
-      isoY: t.targetIsoY - 260 - Math.random() * 100,
+      isoY: t.targetIsoY - 240 - Math.random() * 80,
       targetIsoX: t.targetIsoX,
       targetIsoY: t.targetIsoY,
-      palette: t.palette,
+      colorName: t.colorName,
       scale: 0.1,
       alpha: 0,
     };
@@ -1114,9 +1135,9 @@ function startLegoAnimationLoop() {
         isoY: b.targetIsoY,
         scale: 1,
         alpha: 1,
-        duration: 0.65 + Math.random() * 0.2,
+        duration: 0.55 + Math.random() * 0.15,
         ease: "back.out(1.4)",
-      }, (b.gx + b.gy) * 0.03 + b.l * 0.04);
+      }, (b.gx + b.gy) * 0.025 + b.l * 0.03);
     });
 
     legoState.timeline.add(() => {
@@ -1129,7 +1150,7 @@ function startLegoAnimationLoop() {
   function renderFrame() {
     if (!legoState.active) return;
 
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.clearRect(0, 0, displayW, displayH);
 
     // Sort bricks strictly back-to-front and bottom-to-top
     const sorted = [...legoState.bricks].sort((a, b) => {
@@ -1137,8 +1158,22 @@ function startLegoAnimationLoop() {
       return (a.gx + a.gy) - (b.gx + b.gy);
     });
 
+    // Blit pre-cached offscreen sprites for ultra-fast 60 FPS rendering
     sorted.forEach((b) => {
-      draw2x2LegoBrick(ctx, centerX + b.isoX, centerY + b.isoY, 16, 11, b.palette, b.scale, b.alpha);
+      if (b.alpha <= 0.01 || b.scale <= 0.01) return;
+      const sprite = LEGO_SPRITES[b.colorName] || LEGO_SPRITES.blue;
+      ctx.globalAlpha = b.alpha;
+
+      const drawW = sprite.widthPx * b.scale;
+      const drawH = sprite.heightPx * b.scale;
+
+      ctx.drawImage(
+        sprite.canvas,
+        centerX + b.isoX - sprite.cx * b.scale,
+        centerY + b.isoY - sprite.cy * b.scale,
+        drawW,
+        drawH
+      );
     });
 
     legoState.rafId = requestAnimationFrame(renderFrame);
@@ -1150,7 +1185,7 @@ function startLegoAnimationLoop() {
 function morphLegoStructure() {
   if (!legoState.active || !window.gsap) return;
 
-  legoState.noiseTime += 0.5;
+  legoState.noiseTime += 0.55;
   const newTargets = generateLegoWaveGrid(legoState.noiseTime);
   const targetMap = new Map(newTargets.map(t => [t.id, t]));
 
@@ -1161,21 +1196,19 @@ function morphLegoStructure() {
     if (nt) {
       morphTl.to(b, {
         isoY: nt.targetIsoY,
-        duration: 0.9 + Math.random() * 0.3,
+        duration: 0.8 + Math.random() * 0.25,
         ease: "sine.inOut",
-      }, (b.gx + b.gy) * 0.02);
+      }, (b.gx + b.gy) * 0.018);
     } else {
-      // Brick recedes if height shrank
       morphTl.to(b, {
         alpha: 0,
         scale: 0.2,
-        duration: 0.4,
+        duration: 0.35,
         ease: "power2.in",
       }, 0);
     }
   });
 
-  // Spawn new bricks for columns that grew
   newTargets.forEach((nt) => {
     if (!legoState.bricks.some(b => b.id === nt.id)) {
       const newB = {
@@ -1184,10 +1217,10 @@ function morphLegoStructure() {
         gy: nt.gy,
         l: nt.l,
         isoX: nt.targetIsoX,
-        isoY: nt.targetIsoY - 40,
+        isoY: nt.targetIsoY - 35,
         targetIsoX: nt.targetIsoX,
         targetIsoY: nt.targetIsoY,
-        palette: nt.palette,
+        colorName: nt.colorName,
         scale: 0.2,
         alpha: 0,
       };
@@ -1196,17 +1229,17 @@ function morphLegoStructure() {
         isoY: nt.targetIsoY,
         scale: 1,
         alpha: 1,
-        duration: 0.6,
+        duration: 0.55,
         ease: "back.out(1.5)",
-      }, (nt.gx + nt.gy) * 0.02);
+      }, (nt.gx + nt.gy) * 0.018);
     }
   });
 
   morphTl.add(() => {
     if (legoState.active) {
-      setTimeout(morphLegoStructure, 1200);
+      setTimeout(morphLegoStructure, 1000);
     }
-  }, "+=0.4");
+  }, "+=0.35");
 }
 
 function stopLegoAnimationLoop() {
