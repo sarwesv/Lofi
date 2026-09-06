@@ -915,11 +915,11 @@ if (window.gsap) {
 
 const LEGO_PALETTES = [
   // Classic Red
-  { name: "red",    top: "#E3000B", left: "#B30008", right: "#8C0006", studTop: "#FF2E36", studSide: "#B30008" },
+  { name: "red",    top: "#E3000B", left: "#B80008", right: "#8C0005", studTop: "#FF2E36", studSide: "#B80008" },
   // Classic Blue
-  { name: "blue",   top: "#0055BF", left: "#003E8C", right: "#002C66", studTop: "#2B7FFF", studSide: "#003E8C" },
+  { name: "blue",   top: "#0055BF", left: "#004099", right: "#002E73", studTop: "#2B7FFF", studSide: "#004099" },
   // Classic Yellow
-  { name: "yellow", top: "#FFD700", left: "#CCAC00", right: "#998100", studTop: "#FFE44D", studSide: "#CCAC00" },
+  { name: "yellow", top: "#FFD700", left: "#D4B200", right: "#A88E00", studTop: "#FFE44D", studSide: "#D4B200" },
 ];
 
 const legoState = {
@@ -961,8 +961,8 @@ function draw2x2LegoBrick(ctx, x, y, size, brickH, palette, scale = 1, alpha = 1
   ctx.closePath();
   ctx.fillStyle = palette.top;
   ctx.fill();
-  ctx.strokeStyle = "rgba(0,0,0,0.15)";
-  ctx.lineWidth = 1;
+  ctx.strokeStyle = "rgba(0, 0, 0, 0.06)";
+  ctx.lineWidth = 0.8;
   ctx.stroke();
 
   // Left Face
@@ -988,18 +988,18 @@ function draw2x2LegoBrick(ctx, x, y, size, brickH, palette, scale = 1, alpha = 1
   ctx.stroke();
 
   // Draw 4 Studs on top of 2x2 Brick
-  const studR = w * 0.22;
-  const studH = 7;
+  const studR = w * 0.24;
+  const studH = 5;
   const studOffsets = [
-    { x: 0,        y: -h * 0.48 }, // top
-    { x: -w * 0.48, y: 0 },        // left
-    { x: w * 0.48,  y: 0 },        // right
-    { x: 0,        y: h * 0.48 },  // bottom
+    { x: 0,        y: -h * 0.5 }, // top
+    { x: -w * 0.5, y: 0 },        // left
+    { x: w * 0.5,  y: 0 },        // right
+    { x: 0,        y: h * 0.5 },  // bottom
   ];
 
   studOffsets.forEach((off) => {
     const sx = off.x;
-    const sy = off.y;
+    const sy = off.y - h * 0.1;
 
     // Stud Side Cylinder
     ctx.beginPath();
@@ -1018,44 +1018,50 @@ function draw2x2LegoBrick(ctx, x, y, size, brickH, palette, scale = 1, alpha = 1
 
     // Stud Highlight Ring
     ctx.beginPath();
-    ctx.ellipse(sx, sy - studH, studR * 0.7, studR * 0.35, 0, 0, Math.PI * 2);
+    ctx.ellipse(sx, sy - studH, studR * 0.65, studR * 0.32, 0, 0, Math.PI * 2);
     ctx.strokeStyle = "rgba(255, 255, 255, 0.4)";
-    ctx.lineWidth = 1;
+    ctx.lineWidth = 0.8;
     ctx.stroke();
   });
 
   ctx.restore();
 }
 
-// Generate Perlin-guided 3D structure targets
+// Generate Perlin-guided 3D structure targets (wider base, lower height)
 function generateLegoTargetGrid(noiseOffset) {
   const targets = [];
-  const gridW = 5;
-  const gridH = 5;
-  const maxLayers = 4;
+  const gridW = 7;
+  const gridH = 7;
+  const maxLayers = 2; // wider and lower build
+
+  const tileW = 28;
+  const tileH = 14;
+  const brickH = 20;
 
   for (let gx = 0; gx < gridW; gx++) {
     for (let gy = 0; gy < gridH; gy++) {
       let n = 0;
       if (window.Perlin) {
-        n = window.Perlin.noise3D(gx * 0.45, gy * 0.45, noiseOffset);
+        n = window.Perlin.noise3D(gx * 0.35, gy * 0.35, noiseOffset);
       } else {
-        n = Math.sin(gx * 1.2 + noiseOffset) * Math.cos(gy * 1.2 + noiseOffset);
+        n = Math.sin(gx * 0.8 + noiseOffset) * Math.cos(gy * 0.8 + noiseOffset);
       }
 
-      const layers = Math.max(1, Math.min(maxLayers, Math.floor((n + 1) * 0.5 * maxLayers + 1.2)));
+      if (n > -0.3) {
+        const layers = Math.max(1, Math.min(maxLayers, Math.floor((n + 0.3) * 1.5 + 1)));
 
-      for (let l = 0; l < layers; l++) {
-        const isoX = (gx - gy) * 36;
-        const isoY = (gx + gy) * 18 - l * 26;
-        const pal = LEGO_PALETTES[(gx + gy + l) % LEGO_PALETTES.length];
+        for (let l = 0; l < layers; l++) {
+          const isoX = (gx - gy) * tileW;
+          const isoY = (gx + gy) * tileH - l * (brickH - 4);
+          const pal = LEGO_PALETTES[(gx + gy + l) % LEGO_PALETTES.length];
 
-        targets.push({
-          gx, gy, l,
-          targetIsoX: isoX,
-          targetIsoY: isoY,
-          palette: pal,
-        });
+          targets.push({
+            gx, gy, l,
+            targetIsoX: isoX,
+            targetIsoY: isoY,
+            palette: pal,
+          });
+        }
       }
     }
   }
@@ -1075,13 +1081,16 @@ function startLegoAnimationLoop() {
   const canvas = legoState.canvas;
   const ctx = legoState.ctx;
   const centerX = canvas.width / 2;
-  const centerY = canvas.height / 2 + 30;
+  const centerY = canvas.height / 2 + 10;
 
   legoState.noiseTime = Math.random() * 100;
   const targets = generateLegoTargetGrid(legoState.noiseTime);
 
-  legoState.bricks = targets.map((t, idx) => {
+  legoState.bricks = targets.map((t) => {
     return {
+      gx: t.gx,
+      gy: t.gy,
+      l: t.l,
       isoX: t.targetIsoX + (Math.random() - 0.5) * 300,
       isoY: t.targetIsoY - 350 - Math.random() * 200,
       targetIsoX: t.targetIsoX,
@@ -1089,7 +1098,6 @@ function startLegoAnimationLoop() {
       palette: t.palette,
       scale: 0.1,
       alpha: 0,
-      l: t.l,
     };
   });
 
@@ -1101,9 +1109,9 @@ function startLegoAnimationLoop() {
         isoY: b.targetIsoY,
         scale: 1,
         alpha: 1,
-        duration: 0.65 + Math.random() * 0.2,
+        duration: 0.6 + Math.random() * 0.2,
         ease: "back.out(1.6)",
-      }, i * 0.025);
+      }, i * 0.02);
     });
 
     legoState.timeline.add(() => {
@@ -1118,13 +1126,14 @@ function startLegoAnimationLoop() {
 
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
+    // Sort bricks correctly from back to front for seamless isometric rendering
     const sorted = [...legoState.bricks].sort((a, b) => {
       if (a.l !== b.l) return a.l - b.l;
-      return a.isoY - b.isoY;
+      return (a.gx + a.gy) - (b.gx + b.gy);
     });
 
     sorted.forEach((b) => {
-      draw2x2LegoBrick(ctx, centerX + b.isoX, centerY + b.isoY, 36, 26, b.palette, b.scale, b.alpha);
+      draw2x2LegoBrick(ctx, centerX + b.isoX, centerY + b.isoY, 28, 20, b.palette, b.scale, b.alpha);
     });
 
     legoState.rafId = requestAnimationFrame(renderFrame);
@@ -1145,6 +1154,10 @@ function morphLegoStructure() {
   for (let i = 0; i < numToAnimate; i++) {
     const b = legoState.bricks[i];
     const nt = newTargets[i];
+
+    b.gx = nt.gx;
+    b.gy = nt.gy;
+    b.l = nt.l;
 
     morphTl.to(b, {
       isoY: b.isoY - 40,
