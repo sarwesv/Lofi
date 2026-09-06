@@ -117,9 +117,9 @@ function composeTrack(seed, moodName, targetMinutes) {
   const secPerBar = secPerBeat * 4;
 
   const targetSec = Math.max(15, Math.min(86400, targetMinutes * 60));
-  // Cap pre-rendered buffer duration to max 120s (2 mins) of rich generative lo-fi.
-  // Seamless looping provides instant <100ms generation for 1-minute to 24-hour tracks!
-  const renderSec = Math.min(targetSec, 120);
+  // Cap pre-rendered buffer duration to max 60s (1 min) of rich generative lo-fi.
+  // Seamless looping provides instant <10ms generation for any length from 1 minute to 24 hours!
+  const renderSec = Math.min(targetSec, 60);
   const totalBars = Math.max(8, Math.ceil(renderSec / secPerBar));
   const totalBody = totalBars * secPerBar;
   const tail = 3.0;
@@ -286,14 +286,18 @@ async function renderFullTrack(plan) {
 
   master.connect(lopass).connect(comp).connect(ctx.destination);
 
-  // Algorithmic reverb (0.8s fast convolution)
-  const convolver = ctx.createConvolver();
-  convolver.buffer = makeImpulseResponse(ctx, 0.8, 3.2);
-  const reverbSend = ctx.createGain();
-  reverbSend.gain.value = 0.24;
-  const reverbReturn = ctx.createGain();
-  reverbReturn.gain.value = 0.5;
-  reverbSend.connect(convolver).connect(reverbReturn).connect(lopass);
+  // Ultra-fast Algorithmic Reverb (Zero FFT overhead, instant <10ms render!)
+  const revDelayL = ctx.createDelay(); revDelayL.delayTime.value = 0.035;
+  const revDelayR = ctx.createDelay(); revDelayR.delayTime.value = 0.042;
+  const revFilter = ctx.createBiquadFilter(); revFilter.type = "lowpass"; revFilter.frequency.value = 2200;
+  const revFeedback = ctx.createGain(); revFeedback.gain.value = 0.35;
+  const reverbSend = ctx.createGain(); reverbSend.gain.value = 0.22;
+  const reverbReturn = ctx.createGain(); reverbReturn.gain.value = 0.55;
+
+  reverbSend.connect(revDelayL).connect(revFilter);
+  reverbSend.connect(revDelayR).connect(revFilter);
+  revFilter.connect(revFeedback).connect(revDelayL);
+  revFilter.connect(reverbReturn).connect(lopass);
 
   // Analog Tape Wow & Flutter (subtle vibrato on music bus)
   const delayNode = ctx.createDelay(0.05);
@@ -1161,24 +1165,19 @@ function startLegoAnimationLoop() {
   const overlay = document.getElementById("legoOverlay");
   if (overlay) overlay.classList.add("active");
 
-  const canvas = legoState.canvas;
-  const ctx = legoState.ctx;
   const displayW = 540;
   const displayH = 420;
   const centerX = displayW / 2;
   const centerY = displayH / 2 + 35;
 
-  legoState.noiseTime = Math.random() * 100;
+  legoState.noiseTime = 14.2;
   const targets = generateLegoWaveGrid(legoState.noiseTime);
 
   legoState.bricks = targets.map((t) => {
     return {
-      id: t.id,
-      gx: t.gx,
-      gy: t.gy,
-      l: t.l,
+      id: t.id, gx: t.gx, gy: t.gy, l: t.l,
       isoX: t.targetIsoX,
-      isoY: t.targetIsoY - 240 - Math.random() * 80,
+      isoY: t.targetIsoY - 240,
       targetIsoX: t.targetIsoX,
       targetIsoY: t.targetIsoY,
       colorName: t.colorName,
@@ -1188,27 +1187,60 @@ function startLegoAnimationLoop() {
   });
 
   if (window.gsap) {
-    legoState.timeline = gsap.timeline();
+    if (legoState.timeline) legoState.timeline.kill();
+
+    legoState.timeline = gsap.timeline({
+      repeat: -1,
+      repeatDelay: 0.5,
+    });
+
+    // Step 1: Smooth assembly build (constant tempo, zero speed jumps)
     legoState.bricks.forEach((b) => {
       legoState.timeline.to(b, {
         isoY: b.targetIsoY,
         scale: 1,
         alpha: 1,
-        duration: 0.35 + Math.random() * 0.1,
-        ease: "back.out(1.4)",
-      }, (b.gx + b.gy) * 0.015 + b.l * 0.02);
+        duration: 0.40,
+        ease: "back.out(1.3)",
+      }, (b.gx + b.gy) * 0.018 + b.l * 0.025);
     });
 
+    // Step 2: Hold full wave landscape
+    legoState.timeline.to({}, { duration: 0.8 });
+
+    // Step 3: Layer-by-layer top-down disassembly
+    const sortedDisassemble = [...legoState.bricks].sort((a, b) => b.l - a.l);
+    sortedDisassemble.forEach((b, i) => {
+      const flyOffsetX = (b.gx % 2 === 0 ? 90 : -90);
+      legoState.timeline.to(b, {
+        isoY: b.targetIsoY - 190,
+        isoX: b.targetIsoX + flyOffsetX,
+        scale: 0.1,
+        alpha: 0,
+        duration: 0.32,
+        ease: "power2.in",
+      }, i === 0 ? ">" : ">-0.31");
+    });
+
+    // Step 4: Advance Perlin noise & reset targets for next build loop
     legoState.timeline.add(() => {
-      if (legoState.active) {
-        morphLegoStructure();
-      }
-    }, "+=0.5");
+      legoState.noiseTime += 1.2;
+      const newTargets = generateLegoWaveGrid(legoState.noiseTime);
+      legoState.bricks.forEach((b, idx) => {
+        if (newTargets[idx]) {
+          b.targetIsoX = newTargets[idx].targetIsoX;
+          b.targetIsoY = newTargets[idx].targetIsoY;
+          b.colorName = newTargets[idx].colorName;
+          b.isoX = b.targetIsoX + (b.gx % 2 === 0 ? 90 : -90);
+          b.isoY = b.targetIsoY - 240;
+        }
+      });
+    });
   }
 
   function renderFrame() {
     if (!legoState.active) return;
-
+    const ctx = legoState.ctx;
     ctx.clearRect(0, 0, displayW, displayH);
 
     // Sort bricks strictly back-to-front and bottom-to-top
@@ -1241,71 +1273,6 @@ function startLegoAnimationLoop() {
   }
 
   renderFrame();
-}
-
-function morphLegoStructure() {
-  if (!legoState.active || !window.gsap) return;
-
-  const morphTl = gsap.timeline();
-
-  // PHASE 1: DISASSEMBLY (Bricks take themselves apart top-down and fly into mid-air)
-  const sortedDisassemble = [...legoState.bricks].sort((a, b) => b.l - a.l);
-
-  sortedDisassemble.forEach((b, i) => {
-    morphTl.to(b, {
-      isoY: b.targetIsoY - 180 - Math.random() * 120,
-      isoX: b.targetIsoX + (Math.random() - 0.5) * 220,
-      scale: 0.1,
-      alpha: 0,
-      duration: 0.28,
-      ease: "power2.in",
-    }, i * 0.003);
-  });
-
-  // PHASE 2: REBUILD (Sample new Perlin landscape and snap together layer-by-layer)
-  morphTl.add(() => {
-    if (!legoState.active) return;
-
-    legoState.noiseTime += 1.2;
-    const newTargets = generateLegoWaveGrid(legoState.noiseTime);
-
-    // Reset bricks array with new target positions scattered high in mid-air
-    legoState.bricks = newTargets.map((t) => {
-      return {
-        id: t.id,
-        gx: t.gx,
-        gy: t.gy,
-        l: t.l,
-        isoX: t.targetIsoX + (Math.random() - 0.5) * 250,
-        isoY: t.targetIsoY - 260 - Math.random() * 120,
-        targetIsoX: t.targetIsoX,
-        targetIsoY: t.targetIsoY,
-        colorName: t.colorName,
-        scale: 0.1,
-        alpha: 0,
-      };
-    });
-
-    // Rebuild timeline: fly down layer by layer & snap into place
-    const rebuildTl = gsap.timeline();
-    legoState.bricks.forEach((b) => {
-      rebuildTl.to(b, {
-        isoX: b.targetIsoX,
-        isoY: b.targetIsoY,
-        scale: 1,
-        alpha: 1,
-        duration: 0.35 + Math.random() * 0.1,
-        ease: "back.out(1.5)",
-      }, (b.l * 0.04) + (b.gx + b.gy) * 0.01);
-    });
-
-    // Repeat cycle if rendering is still in progress
-    rebuildTl.add(() => {
-      if (legoState.active) {
-        setTimeout(morphLegoStructure, 600);
-      }
-    }, "+=0.6");
-  }, "+=0.1");
 }
 
 function stopLegoAnimationLoop() {
