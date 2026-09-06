@@ -90,6 +90,19 @@
     </footer>
   </main>
 
+  <!-- Lego Loading Overlay Modal -->
+  <div class="lego-overlay" id="legoOverlay" aria-hidden="true">
+    <div class="lego-card">
+      <div class="lego-canvas-wrap">
+        <canvas id="legoCanvas" width="540" height="420"></canvas>
+      </div>
+      <div class="lego-status">
+        <span class="lego-title">Creating your track...</span>
+      </div>
+    </div>
+  </div>
+
+  <script src="perlin.js"></script>
   <script src="gsap.min.js"></script>
   <script src="app.js"></script>
 </body>
