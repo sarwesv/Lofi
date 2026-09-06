@@ -595,6 +595,7 @@ const els = {
   moodTrigger: document.getElementById("moodTrigger"),
   moodMenu: document.getElementById("moodMenu"),
   moodCurrent: document.getElementById("moodCurrent"),
+  hrInput: document.getElementById("hrInput"),
   minInput: document.getElementById("minInput"),
   secInput: document.getElementById("secInput"),
   vinyl: document.getElementById("vinyl"),
@@ -666,8 +667,12 @@ function revealTrack() {
 
 function fmtTime(s) {
   s = Math.max(0, s);
-  const m = Math.floor(s / 60);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
   const sec = Math.floor(s % 60);
+  if (h > 0) {
+    return `${h}:${m.toString().padStart(2, "0")}:${sec.toString().padStart(2, "0")}`;
+  }
   return `${m}:${sec.toString().padStart(2, "0")}`;
 }
 
@@ -824,41 +829,64 @@ function download() {
 /* ------------------------------- Time Inputs ----------------------------- */
 
 function getRequestedMinutes() {
+  let hrs = parseInt(els.hrInput.value, 10);
   let mins = parseInt(els.minInput.value, 10);
   let secs = parseInt(els.secInput.value, 10);
+  if (isNaN(hrs) || hrs < 0) hrs = 0;
   if (isNaN(mins) || mins < 0) mins = 0;
   if (isNaN(secs) || secs < 0) secs = 0;
 
   if (secs >= 60) {
     mins += Math.floor(secs / 60);
     secs = secs % 60;
-    els.minInput.value = mins;
-    els.secInput.value = secs.toString().padStart(2, "0");
   }
+  if (mins >= 60) {
+    hrs += Math.floor(mins / 60);
+    mins = mins % 60;
+  }
+  if (hrs > 24) hrs = 24;
 
-  const totalSec = mins * 60 + secs;
-  const clampedSec = Math.max(15, Math.min(3600, totalSec));
+  els.hrInput.value = hrs;
+  els.minInput.value = mins.toString().padStart(2, "0");
+  els.secInput.value = secs.toString().padStart(2, "0");
+
+  const totalSec = hrs * 3600 + mins * 60 + secs;
+  const clampedSec = Math.max(15, Math.min(86400, totalSec));
   return clampedSec / 60;
 }
 
 function sanitizeTimeInputs() {
+  let hrs = parseInt(els.hrInput.value, 10);
   let mins = parseInt(els.minInput.value, 10);
   let secs = parseInt(els.secInput.value, 10);
 
+  if (isNaN(hrs) || hrs < 0) hrs = 0;
+  if (hrs > 24) hrs = 24;
+
   if (isNaN(mins) || mins < 0) mins = 0;
-  if (mins > 60) mins = 60;
+  if (mins >= 60) {
+    hrs += Math.floor(mins / 60);
+    mins = mins % 60;
+    if (hrs > 24) hrs = 24;
+  }
 
   if (isNaN(secs) || secs < 0) secs = 0;
   if (secs >= 60) {
     mins += Math.floor(secs / 60);
     secs = secs % 60;
-    if (mins > 60) mins = 60;
+    if (mins >= 60) {
+      hrs += Math.floor(mins / 60);
+      mins = mins % 60;
+      if (hrs > 24) hrs = 24;
+    }
   }
 
-  els.minInput.value = mins;
+  els.hrInput.value = hrs;
+  els.minInput.value = mins.toString().padStart(2, "0");
   els.secInput.value = secs.toString().padStart(2, "0");
 }
 
+els.hrInput.addEventListener("blur", sanitizeTimeInputs);
 els.minInput.addEventListener("blur", sanitizeTimeInputs);
 els.secInput.addEventListener("blur", sanitizeTimeInputs);
 

@@ -240,7 +240,7 @@ h1 .note {
   background: rgba(32, 60, 105, 0.55);
 }
 .time-input-group input[type="number"] {
-  width: 32px; background: transparent; border: none; outline: none;
+  width: 24px; background: transparent; border: none; outline: none;
   font-family: var(--font-body); font-size: 14px; font-weight: 600;
   color: var(--text); text-align: center;
   -moz-appearance: textfield;

@@ -73,10 +73,12 @@
           <div class="opt">
             <span>Length</span>
             <div class="time-input-group">
-              <input type="number" id="minInput" min="0" max="60" value="2" aria-label="Minutes" placeholder="2" />
+              <input type="number" id="hrInput" min="0" max="24" value="0" aria-label="Hours" placeholder="0" />
+              <span class="time-sep">:</span>
+              <input type="number" id="minInput" min="0" max="59" value="02" aria-label="Minutes" placeholder="02" />
               <span class="time-sep">:</span>
               <input type="number" id="secInput" min="0" max="59" value="00" aria-label="Seconds" placeholder="00" />
-              <span class="time-unit">m : s</span>
+              <span class="time-unit">h : m : s</span>
             </div>
           </div>
         </div>
