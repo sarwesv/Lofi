@@ -1185,61 +1185,66 @@ function startLegoAnimationLoop() {
 function morphLegoStructure() {
   if (!legoState.active || !window.gsap) return;
 
-  legoState.noiseTime += 0.55;
-  const newTargets = generateLegoWaveGrid(legoState.noiseTime);
-  const targetMap = new Map(newTargets.map(t => [t.id, t]));
-
   const morphTl = gsap.timeline();
 
-  legoState.bricks.forEach((b) => {
-    const nt = targetMap.get(b.id);
-    if (nt) {
-      morphTl.to(b, {
-        isoY: nt.targetIsoY,
-        duration: 0.8 + Math.random() * 0.25,
-        ease: "sine.inOut",
-      }, (b.gx + b.gy) * 0.018);
-    } else {
-      morphTl.to(b, {
-        alpha: 0,
-        scale: 0.2,
-        duration: 0.35,
-        ease: "power2.in",
-      }, 0);
-    }
+  // PHASE 1: DISASSEMBLY (Bricks take themselves apart top-down and fly into mid-air)
+  const sortedDisassemble = [...legoState.bricks].sort((a, b) => b.l - a.l);
+
+  sortedDisassemble.forEach((b, i) => {
+    morphTl.to(b, {
+      isoY: b.targetIsoY - 180 - Math.random() * 120,
+      isoX: b.targetIsoX + (Math.random() - 0.5) * 220,
+      scale: 0.1,
+      alpha: 0,
+      duration: 0.42,
+      ease: "power2.in",
+    }, i * 0.005);
   });
 
-  newTargets.forEach((nt) => {
-    if (!legoState.bricks.some(b => b.id === nt.id)) {
-      const newB = {
-        id: nt.id,
-        gx: nt.gx,
-        gy: nt.gy,
-        l: nt.l,
-        isoX: nt.targetIsoX,
-        isoY: nt.targetIsoY - 35,
-        targetIsoX: nt.targetIsoX,
-        targetIsoY: nt.targetIsoY,
-        colorName: nt.colorName,
-        scale: 0.2,
+  // PHASE 2: REBUILD (Sample new Perlin landscape and snap together layer-by-layer)
+  morphTl.add(() => {
+    if (!legoState.active) return;
+
+    legoState.noiseTime += 1.2;
+    const newTargets = generateLegoWaveGrid(legoState.noiseTime);
+
+    // Reset bricks array with new target positions scattered high in mid-air
+    legoState.bricks = newTargets.map((t) => {
+      return {
+        id: t.id,
+        gx: t.gx,
+        gy: t.gy,
+        l: t.l,
+        isoX: t.targetIsoX + (Math.random() - 0.5) * 250,
+        isoY: t.targetIsoY - 260 - Math.random() * 120,
+        targetIsoX: t.targetIsoX,
+        targetIsoY: t.targetIsoY,
+        colorName: t.colorName,
+        scale: 0.1,
         alpha: 0,
       };
-      legoState.bricks.push(newB);
-      morphTl.to(newB, {
-        isoY: nt.targetIsoY,
+    });
+
+    // Rebuild timeline: fly down layer by layer & snap into place
+    const rebuildTl = gsap.timeline();
+    legoState.bricks.forEach((b) => {
+      rebuildTl.to(b, {
+        isoX: b.targetIsoX,
+        isoY: b.targetIsoY,
         scale: 1,
         alpha: 1,
-        duration: 0.55,
+        duration: 0.55 + Math.random() * 0.15,
         ease: "back.out(1.5)",
-      }, (nt.gx + nt.gy) * 0.018);
-    }
-  });
+      }, (b.l * 0.06) + (b.gx + b.gy) * 0.015);
+    });
 
-  morphTl.add(() => {
-    if (legoState.active) {
-      setTimeout(morphLegoStructure, 1000);
-    }
-  }, "+=0.35");
+    // Repeat cycle if rendering is still in progress
+    rebuildTl.add(() => {
+      if (legoState.active) {
+        setTimeout(morphLegoStructure, 1400);
+      }
+    }, "+=1.4");
+  }, "+=0.15");
 }
 
 function stopLegoAnimationLoop() {
