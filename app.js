@@ -116,8 +116,11 @@ function composeTrack(seed, moodName, targetMinutes) {
   const secPerBeat = 60 / bpm;
   const secPerBar = secPerBeat * 4;
 
-  const targetSec = Math.max(15, targetMinutes * 60);
-  const totalBars = Math.max(8, Math.ceil(targetSec / secPerBar));
+  const targetSec = Math.max(15, Math.min(86400, targetMinutes * 60));
+  // Cap pre-rendered buffer duration to max 240s (4 mins) of rich generative lo-fi.
+  // For long duration requests (>4m up to 24 hours), audio engine seamlessly loops buffer up to targetSec!
+  const renderSec = Math.min(targetSec, 240);
+  const totalBars = Math.max(8, Math.ceil(renderSec / secPerBar));
   const totalBody = totalBars * secPerBar;
   const tail = 3.0;
   const duration = totalBody + tail;
@@ -133,7 +136,7 @@ function composeTrack(seed, moodName, targetMinutes) {
 
   return {
     seed, moodName, mood, bpm,
-    totalBars, totalBody, tail, duration,
+    totalBars, totalBody, tail, duration, requestedDuration: targetSec,
     rootName, rootSemitone, progression, chordBars, sections,
     secPerBeat, secPerBar,
     title: makeTitle(rng),
@@ -546,10 +549,14 @@ function makeImpulseResponse(ctx, seconds, decay) {
 
 /* ------------------------------ WAV encoder ------------------------------ */
 
-function audioBufferToWav(buffer) {
+function audioBufferToWav(buffer, targetDuration) {
   const numCh = buffer.numberOfChannels;
   const sampleRate = buffer.sampleRate;
-  const numFrames = buffer.length;
+  const bufFrames = buffer.length;
+
+  const maxWavSec = targetDuration ? Math.min(targetDuration, 600) : buffer.duration;
+  const numFrames = Math.max(bufFrames, Math.ceil(maxWavSec * sampleRate));
+
   const bytesPerSample = 2;
   const blockAlign = numCh * bytesPerSample;
   const dataSize = numFrames * blockAlign;
@@ -570,9 +577,12 @@ function audioBufferToWav(buffer) {
 
   const channels = [];
   for (let c = 0; c < numCh; c++) channels.push(buffer.getChannelData(c));
+  const loopFrames = Math.max(1, bufFrames - Math.floor(sampleRate * 3.0));
+
   for (let i = 0; i < numFrames; i++) {
+    const srcIdx = i < bufFrames ? i : (i % loopFrames);
     for (let c = 0; c < numCh; c++) {
-      let s = Math.max(-1, Math.min(1, channels[c][i]));
+      let s = Math.max(-1, Math.min(1, channels[c][srcIdx]));
       view.setInt16(p, s < 0 ? s * 0x8000 : s * 0x7fff, true);
       p += 2;
     }
@@ -695,7 +705,7 @@ async function generate() {
   const minutes = getRequestedMinutes();
 
   // Let the UI paint the "working" state before the heavy render.
-  await new Promise((r) => setTimeout(r, 60));
+  await new Promise((r) => setTimeout(r, 80));
 
   try {
     const plan = composeTrack(seed, mood, minutes);
@@ -704,11 +714,12 @@ async function generate() {
     state.buffer = buffer;
     state.plan = plan;
     state.offset = 0;
+    state.totalDuration = plan.requestedDuration;
 
     els.title.textContent = plan.title;
     els.meta.textContent =
       `${plan.rootName} · ${moodLabel(mood)} · ${plan.bpm} BPM · ${plan.totalBars} bars`;
-    els.totTime.textContent = fmtTime(buffer.duration);
+    els.totTime.textContent = fmtTime(state.totalDuration);
     els.curTime.textContent = "0:00";
     els.progressBar.style.width = "0%";
 
@@ -739,16 +750,24 @@ function startPlayback(fromOffset) {
   if (ctx.state === "suspended") ctx.resume();
   const src = ctx.createBufferSource();
   src.buffer = state.buffer;
+
+  // Seamless looping for tracks where requested length exceeds single buffer
+  const loopEnd = Math.max(1, state.buffer.duration - (state.plan ? state.plan.tail : 0));
+  src.loop = true;
+  src.loopStart = 0;
+  src.loopEnd = loopEnd;
+
   src.connect(ctx.destination);
   src.onended = () => {
     if (state.source === src && state.playing) {
-      // reached the natural end
       stopPlayback();
       els.progressBar.style.width = "100%";
-      els.curTime.textContent = fmtTime(state.buffer.duration);
+      els.curTime.textContent = fmtTime(state.totalDuration || state.buffer.duration);
     }
   };
-  src.start(0, fromOffset);
+
+  const startPos = fromOffset % loopEnd;
+  src.start(0, startPos);
   state.source = src;
   state.startedAt = ctx.currentTime - fromOffset;
   state.playing = true;
@@ -773,12 +792,12 @@ function stopPlayback() {
 function togglePlay() {
   if (!state.buffer) return;
   if (state.playing) {
-    // pause: remember offset
     const ctx = state.playCtx;
     state.offset = ctx.currentTime - state.startedAt;
     stopPlayback();
   } else {
-    if (state.offset >= state.buffer.duration) state.offset = 0;
+    const totalDur = state.totalDuration || state.buffer.duration;
+    if (state.offset >= totalDur) state.offset = 0;
     startPlayback(state.offset);
   }
 }
@@ -787,7 +806,15 @@ function tick() {
   if (!state.playing) return;
   const ctx = state.playCtx;
   const cur = ctx.currentTime - state.startedAt;
-  const dur = state.buffer.duration;
+  const dur = state.totalDuration || state.buffer.duration;
+
+  if (cur >= dur) {
+    stopPlayback();
+    els.progressBar.style.width = "100%";
+    els.curTime.textContent = fmtTime(dur);
+    return;
+  }
+
   els.progressBar.style.width = `${Math.min(100, (cur / dur) * 100)}%`;
   els.curTime.textContent = fmtTime(cur);
   state.rafId = requestAnimationFrame(tick);
@@ -797,7 +824,8 @@ function seek(clientX) {
   if (!state.buffer) return;
   const rect = els.progressWrap.getBoundingClientRect();
   const ratio = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
-  const target = ratio * state.buffer.duration;
+  const dur = state.totalDuration || state.buffer.duration;
+  const target = ratio * dur;
   state.offset = target;
   els.progressBar.style.width = `${ratio * 100}%`;
   els.curTime.textContent = fmtTime(target);
@@ -810,9 +838,8 @@ function seek(clientX) {
 function download() {
   if (!state.buffer) return;
   setStatus("Encoding WAV…", "working");
-  // Defer so the status paints before the (sync) encode.
   setTimeout(() => {
-    const blob = audioBufferToWav(state.buffer);
+    const blob = audioBufferToWav(state.buffer, state.totalDuration);
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     const safe = state.plan.title.replace(/\s+/g, "_");
@@ -1194,11 +1221,13 @@ function startLegoAnimationLoop() {
 
       const drawW = sprite.widthPx * b.scale;
       const drawH = sprite.heightPx * b.scale;
+      const drawX = Math.round(centerX + b.isoX - sprite.cx * b.scale);
+      const drawY = Math.round(centerY + b.isoY - sprite.cy * b.scale);
 
       ctx.drawImage(
         sprite.canvas,
-        centerX + b.isoX - sprite.cx * b.scale,
-        centerY + b.isoY - sprite.cy * b.scale,
+        drawX,
+        drawY,
         drawW,
         drawH
       );
