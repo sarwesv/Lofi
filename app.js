@@ -177,6 +177,63 @@ function playKeys(ctx, dest, freq, t, dur, gainVal, mood) {
   out.gain.exponentialRampToValueAtTime(0.0001, t + dur + 0.25);
 }
 
+// Acoustic Grand Piano voice synthesis (harmonic string partials + felt hammer attack transient)
+function playPiano(ctx, dest, freq, t, dur, gainVal = 0.15) {
+  t = Math.max(0, t);
+  const out = ctx.createGain();
+  out.gain.value = 0;
+
+  // Filter with velocity/envelope tracking for authentic acoustic piano timbre
+  const filter = ctx.createBiquadFilter();
+  filter.type = "lowpass";
+  filter.frequency.setValueAtTime(Math.min(9000, freq * 4.2), t);
+  filter.frequency.exponentialRampToValueAtTime(Math.max(350, freq * 1.6), t + Math.min(dur, 0.45));
+  filter.Q.value = 0.6;
+
+  filter.connect(out);
+  out.connect(dest);
+
+  // Piano string harmonic partials
+  const partials = [
+    { ratio: 1.00, gain: 1.0, detune: 0 },
+    { ratio: 2.00, gain: 0.42, detune: 2.5 },
+    { ratio: 3.00, gain: 0.16, detune: -3.5 },
+    { ratio: 4.00, gain: 0.07, detune: 4.5 }
+  ];
+
+  partials.forEach((p) => {
+    const osc = ctx.createOscillator();
+    osc.type = p.ratio === 1 ? "triangle" : "sine";
+    osc.frequency.value = freq * p.ratio;
+    osc.detune.value = p.detune;
+
+    const pGain = ctx.createGain();
+    pGain.gain.value = p.gain;
+    osc.connect(pGain).connect(filter);
+
+    osc.start(t);
+    osc.stop(t + dur + 0.35);
+  });
+
+  // Hammer strike transient (felt hammer hitting string)
+  const hammer = ctx.createOscillator();
+  hammer.type = "sine";
+  hammer.frequency.setValueAtTime(freq * 5.5, t);
+  hammer.frequency.exponentialRampToValueAtTime(80, t + 0.012);
+  const hammerGain = ctx.createGain();
+  hammerGain.gain.setValueAtTime(gainVal * 0.35, t);
+  hammerGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.015);
+  hammer.connect(hammerGain).connect(out);
+  hammer.start(t);
+  hammer.stop(t + 0.02);
+
+  // Piano Envelope (percussive attack -> natural string decay)
+  out.gain.setValueAtTime(0, t);
+  out.gain.linearRampToValueAtTime(gainVal, t + 0.003);
+  out.gain.exponentialRampToValueAtTime(gainVal * 0.35, t + 0.10);
+  out.gain.exponentialRampToValueAtTime(0.0001, t + dur + 0.28);
+}
+
 function playBass(ctx, dest, freq, t, dur, gainVal) {
   t = Math.max(0, t);
   const osc = ctx.createOscillator();
@@ -329,7 +386,7 @@ async function renderFullTrack(plan) {
     const section = plan.sections[b];
     const intervals = CHORDS[chord.quality];
 
-    // --- KEYS & HARMONY ---
+    // --- KEYS & ACOUSTIC PIANO HARMONY ---
     const strums = (section === "intro" || section === "outro")
       ? [0]
       : (rng() < 0.4 ? [0, 2] : [0]);
@@ -343,17 +400,45 @@ async function renderFullTrack(plan) {
         const spread = i * 0.015 * (0.6 + rng() * 0.8);
         const gainMult = (section === "intro" || section === "outro") ? 0.11 : 0.14;
         playKeys(ctx, musicBus, freq, t + spread, holdBeats * beat, gainMult, plan.mood);
+
+        // Layer warm acoustic grand piano chord stabs
+        if (i === 0 || i === 2 || rng() < 0.6) {
+          playPiano(ctx, musicBus, freq, t + spread + (rng() - 0.5) * 0.006, holdBeats * beat * 0.9, gainMult * 0.75);
+        }
       });
     });
 
-    // Soft melody grace notes on keys in variation/peak sections
-    if ((section === "variation" || section === "peak") && rng() < 0.4) {
-      const melBeat = pick(rng, [1.5, 2.5, 3.25]);
-      const melDegree = pick(rng, pentatonicScale);
-      const melMidi = chord.rootPc + melDegree + (plan.mood.octave + 2) * 12;
-      const melFreq = 440 * Math.pow(2, (melMidi - 69) / 12);
-      const melTime = barStart + melBeat * beat + (rng() - 0.5) * 0.01;
-      playKeys(ctx, musicBus, melFreq, melTime, beat * 0.8, 0.09, plan.mood);
+    // --- ACOUSTIC PIANO MELODY & RUNS ---
+    if (section !== "intro" && section !== "outro") {
+      // 1. Primary Piano Melody Riffs
+      if (rng() < 0.75) {
+        const pBeats = pick(rng, [[1.5, 3.25], [0.75, 2.5, 3.5], [1.5, 2.75, 3.75], [2.25, 3.5]]);
+        pBeats.forEach((melBeat) => {
+          const deg = pick(rng, pentatonicScale);
+          const melMidi = chord.rootPc + deg + (plan.mood.octave + 2) * 12;
+          const melFreq = 440 * Math.pow(2, (melMidi - 69) / 12);
+          const melTime = barStart + melBeat * beat + (rng() - 0.5) * 0.01;
+          const vel = 0.10 + rng() * 0.06;
+
+          // Piano Grace Note (quick 16th-note slide into target melody note)
+          if (rng() < 0.35) {
+            const graceMidi = melMidi - (rng() < 0.5 ? 1 : 2);
+            const graceFreq = 440 * Math.pow(2, (graceMidi - 69) / 12);
+            playPiano(ctx, musicBus, graceFreq, melTime - 0.045, 0.08, vel * 0.6);
+          }
+
+          playPiano(ctx, musicBus, melFreq, melTime, beat * 0.9, vel);
+        });
+      }
+
+      // 2. High-Octave Piano Drops (Upper register sparkles)
+      if ((section === "variation" || section === "peak") && rng() < 0.5) {
+        const highDeg = pick(rng, [0, 4, 7, 9, 12, 16]);
+        const highMidi = chord.rootPc + highDeg + (plan.mood.octave + 3) * 12;
+        const highFreq = 440 * Math.pow(2, (highMidi - 69) / 12);
+        const highTime = barStart + beat * (rng() < 0.5 ? 2.5 : 3.75) + (rng() - 0.5) * 0.008;
+        playPiano(ctx, musicBus, highFreq, highTime, beat * 1.2, 0.08);
+      }
     }
 
     // --- SUB BASS ---
