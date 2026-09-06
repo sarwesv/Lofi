@@ -77,6 +77,33 @@ function pick(rng, arr) { return arr[Math.floor(rng() * arr.length)]; }
 // which drum hits land where. This is deterministic given the seed.
 // `targetMinutes` sets the desired length; bars are derived from the tempo
 // and rounded to a whole number of progression loops so it always ends clean.
+function buildSections(totalBars) {
+  const sections = [];
+  const introBars = totalBars >= 16 ? 4 : 2;
+  const outroBars = totalBars >= 16 ? 4 : 2;
+
+  for (let b = 0; b < totalBars; b++) {
+    if (b < introBars) {
+      sections.push("intro");
+    } else if (b >= totalBars - outroBars) {
+      sections.push("outro");
+    } else {
+      const bodyIndex = b - introBars;
+      const cycle = bodyIndex % 16;
+      if (cycle < 4) {
+        sections.push("groove");
+      } else if (cycle < 8) {
+        sections.push("variation");
+      } else if (cycle < 12) {
+        sections.push("breakdown");
+      } else {
+        sections.push("peak");
+      }
+    }
+  }
+  return sections;
+}
+
 function composeTrack(seed, moodName, targetMinutes) {
   const rng = mulberry32(seed);
   const mood = MOODS[moodName];
@@ -89,33 +116,26 @@ function composeTrack(seed, moodName, targetMinutes) {
   const secPerBeat = 60 / bpm;
   const secPerBar = secPerBeat * 4;
 
-  // We render a short internal loop (two full progression cycles) once, then
-  // tile it to reach the requested length. Lofi is loop-based, so this keeps
-  // render time constant no matter how many minutes the user asks for.
-  const loopBars = progression.length * 2; // e.g. 8 bars
-  const loopBody = secPerBar * loopBars;    // seconds of one loop cycle
-  const tail = 2.4;                         // reverb/release tail per loop
-
   const targetSec = Math.max(15, targetMinutes * 60);
-  const numLoops = Math.max(1, Math.round(targetSec / loopBody));
-  const totalBody = loopBody * numLoops;
+  const totalBars = Math.max(8, Math.ceil(targetSec / secPerBar));
+  const totalBody = totalBars * secPerBar;
+  const tail = 3.0;
   const duration = totalBody + tail;
 
-  // Chords for the bars inside one loop cycle (the progression loops within it).
   const chordBars = [];
-  for (let b = 0; b < loopBars; b++) {
+  for (let b = 0; b < totalBars; b++) {
     const [degree, quality] = progression[b % progression.length];
     const chordRoot = (rootSemitone + degree) % 12;
-    chordBars.push({ rootPc: chordRoot, quality, degree });
+    chordBars.push({ rootPc: chordRoot, quality, degree, barIndex: b });
   }
+
+  const sections = buildSections(totalBars);
 
   return {
     seed, moodName, mood, bpm,
-    loopBars, loopBody, tail, numLoops, totalBody,
-    totalBars: loopBars * numLoops,
-    rootName, rootSemitone, progression, chordBars,
+    totalBars, totalBody, tail, duration,
+    rootName, rootSemitone, progression, chordBars, sections,
     secPerBeat, secPerBar,
-    duration,
     title: makeTitle(rng),
     rng,
   };
@@ -239,11 +259,13 @@ function playHat(ctx, dest, noiseBuf, t, gainVal, open) {
 
 /* --------------------------- Offline rendering --------------------------- */
 
-// Render one loop cycle (plan.loopBars) plus a reverb/release tail. The tail
-// lets us overlap-add successive loops so seams are seamless.
-async function renderLoop(plan) {
+// Render the entire track performance dynamically across sections with human
+// micro-timing, J Dilla snare layback, ghost snares, turnaround drum fills,
+// pentatonic keys embellishments, and analog tape pitch wobble.
+async function renderFullTrack(plan) {
   const sampleRate = 44100;
-  const ctx = new OfflineAudioContext(2, Math.ceil((plan.loopBody + plan.tail) * sampleRate), sampleRate);
+  const totalSamples = Math.ceil(plan.duration * sampleRate);
+  const ctx = new OfflineAudioContext(2, totalSamples, sampleRate);
   const rng = mulberry32(plan.seed ^ 0x9e3779b9);
 
   // --- master chain: gentle lo-fi lowpass + soft compression + reverb send.
@@ -261,104 +283,179 @@ async function renderLoop(plan) {
 
   master.connect(lopass).connect(comp).connect(ctx.destination);
 
-  // Simple algorithmic reverb via a generated impulse response.
+  // Algorithmic reverb
   const convolver = ctx.createConvolver();
   convolver.buffer = makeImpulseResponse(ctx, 2.2, 2.6);
   const reverbSend = ctx.createGain();
-  reverbSend.gain.value = 0.22;
+  reverbSend.gain.value = 0.24;
   const reverbReturn = ctx.createGain();
   reverbReturn.gain.value = 0.5;
   reverbSend.connect(convolver).connect(reverbReturn).connect(lopass);
 
+  // Analog Tape Wow & Flutter (subtle vibrato on music bus)
+  const delayNode = ctx.createDelay(0.05);
+  delayNode.delayTime.value = 0.005;
+  const lfo = ctx.createOscillator();
+  lfo.frequency.value = 0.38 + rng() * 0.12;
+  const lfoGain = ctx.createGain();
+  lfoGain.gain.value = 0.00032; // ~0.12% pitch drift
+  lfo.connect(lfoGain).connect(delayNode.delayTime);
+  lfo.start(0);
+
   // Buses
   const musicBus = ctx.createGain();
-  musicBus.connect(master);
+  musicBus.connect(delayNode).connect(master);
   musicBus.connect(reverbSend);
+
   const drumBus = ctx.createGain();
-  drumBus.gain.value = 0.9;
+  drumBus.gain.value = 0.92;
   drumBus.connect(master);
 
   const noiseBuf = makeNoiseBuffer(ctx, 1);
-
-  // --- schedule every bar ---
   const swing = plan.mood.swing;
   const beat = plan.secPerBeat;
+  const pentatonicScale = [0, 2, 4, 7, 9, 12, 14];
 
-  for (let b = 0; b < plan.loopBars; b++) {
+  for (let b = 0; b < plan.totalBars; b++) {
     const barStart = b * plan.secPerBar;
     const chord = plan.chordBars[b];
+    const section = plan.sections[b];
     const intervals = CHORDS[chord.quality];
 
-    // Chord voicing (keys) — hold across the bar, occasionally re-strum mid-bar.
-    const strums = rng() < 0.45 ? [0, 2] : [0]; // beat offsets to strum on
+    // --- KEYS & HARMONY ---
+    const strums = (section === "intro" || section === "outro")
+      ? [0]
+      : (rng() < 0.4 ? [0, 2] : [0]);
+
     strums.forEach((strumBeat) => {
-      const t = barStart + strumBeat * beat + (rng() - 0.5) * 0.01;
+      const t = barStart + strumBeat * beat + (rng() - 0.5) * 0.012;
       const holdBeats = strums.length > 1 ? 2 : 4;
       intervals.forEach((iv, i) => {
         const midi = chord.rootPc + iv + (plan.mood.octave + 1) * 12;
         const freq = 440 * Math.pow(2, (midi - 69) / 12);
-        // Slight arpeggio spread on the strum for a hand-played feel.
-        const spread = i * 0.018 * (0.5 + rng());
-        playKeys(ctx, musicBus, freq, t + spread, holdBeats * beat, 0.14, plan.mood);
+        const spread = i * 0.015 * (0.6 + rng() * 0.8);
+        const gainMult = (section === "intro" || section === "outro") ? 0.11 : 0.14;
+        playKeys(ctx, musicBus, freq, t + spread, holdBeats * beat, gainMult, plan.mood);
       });
     });
 
-    // Bassline — root on beat 1, plus a passing note (root/fifth/octave).
-    const bassMidi = chord.rootPc + (plan.mood.octave - 2 + 1) * 12; // ~2 octaves down
-    const bassFreq = 440 * Math.pow(2, (bassMidi - 69) / 12);
-    playBass(ctx, musicBus, bassFreq, barStart, beat * 1.5, 0.34);
-    if (rng() < 0.7) {
-      const passIv = pick(rng, [7, 12, 5]);
-      const pf = 440 * Math.pow(2, (bassMidi + passIv - 69) / 12);
-      playBass(ctx, musicBus, pf, barStart + beat * 2.5, beat * 1.2, 0.28);
+    // Soft melody grace notes on keys in variation/peak sections
+    if ((section === "variation" || section === "peak") && rng() < 0.4) {
+      const melBeat = pick(rng, [1.5, 2.5, 3.25]);
+      const melDegree = pick(rng, pentatonicScale);
+      const melMidi = chord.rootPc + melDegree + (plan.mood.octave + 2) * 12;
+      const melFreq = 440 * Math.pow(2, (melMidi - 69) / 12);
+      const melTime = barStart + melBeat * beat + (rng() - 0.5) * 0.01;
+      playKeys(ctx, musicBus, melFreq, melTime, beat * 0.8, 0.09, plan.mood);
     }
 
-    // --- Drums: classic lo-fi boom-bap with swing on the off-8ths. ---
-    // Kick on 1 and the "and" of 2 / beat 3 area (varied).
-    playKick(ctx, drumBus, barStart, 0.9);
-    if (rng() < 0.85) playKick(ctx, drumBus, barStart + beat * 2.5, 0.75);
-    if (rng() < 0.3) playKick(ctx, drumBus, barStart + beat * 3.5, 0.6);
+    // --- SUB BASS ---
+    const bassMidi = chord.rootPc + (plan.mood.octave - 2 + 1) * 12;
+    const bassFreq = 440 * Math.pow(2, (bassMidi - 69) / 12);
+    const bassVol = (section === "intro" || section === "outro") ? 0.24 : 0.35;
+    playBass(ctx, musicBus, bassFreq, barStart + (rng() - 0.5) * 0.005, beat * 1.6, bassVol);
 
-    // Snare on 2 and 4.
-    playSnare(ctx, drumBus, noiseBuf, barStart + beat * 1, 0.5);
-    playSnare(ctx, drumBus, noiseBuf, barStart + beat * 3, 0.5);
+    if (section !== "intro" && section !== "outro" && rng() < 0.65) {
+      const passIv = pick(rng, [7, 12, 5]);
+      const pf = 440 * Math.pow(2, (bassMidi + passIv - 69) / 12);
+      const passTime = barStart + beat * (rng() < 0.5 ? 2.5 : 3.5) + (rng() - 0.5) * 0.008;
+      playBass(ctx, musicBus, pf, passTime, beat * 1.1, 0.26);
+    }
 
-    // Hats on every 8th with swing + humanized velocity; occasional open hat.
-    for (let eighth = 0; eighth < 8; eighth++) {
-      const isOff = eighth % 2 === 1;
-      const swingOffset = isOff ? swing * beta(beat) : 0;
-      const t = barStart + eighth * (beat / 2) + swingOffset + (rng() - 0.5) * 0.006;
-      const vel = 0.18 * (0.6 + rng() * 0.5) * (isOff ? 0.8 : 1);
-      const open = rng() < 0.08 && isOff;
-      playHat(ctx, drumBus, noiseBuf, t, vel, open);
+    // --- DRUMS (Boom-Bap with J Dilla Layback & Dynamic Variation) ---
+    const hasDrums = section !== "intro" && section !== "outro";
+    if (hasDrums) {
+      const isBreakdown = section === "breakdown";
+      const isPeak = section === "peak";
+
+      // 1. Kick Drums
+      const kickVol = isBreakdown ? 0.6 : 0.9;
+      playKick(ctx, drumBus, barStart + (rng() - 0.5) * 0.005, kickVol);
+
+      if (!isBreakdown) {
+        if (rng() < 0.82) {
+          const syncKickT = barStart + beat * 2.5 + (rng() < 0.5 ? 0.010 : -0.006) + (rng() - 0.5) * 0.006;
+          playKick(ctx, drumBus, syncKickT, 0.76);
+        }
+        if (rng() < 0.32) {
+          const syncKick2T = barStart + beat * 3.5 + (rng() - 0.5) * 0.008;
+          playKick(ctx, drumBus, syncKick2T, 0.62);
+        }
+      }
+
+      // 2. Snares (Beat 2 & 4 with J Dilla Layback + Ghost Snares)
+      const snareLayback = 0.014 + (rng() - 0.5) * 0.006; // 11ms to 17ms behind grid
+      const snare1Vel = 0.45 + (rng() - 0.5) * 0.08;
+      const snare2Vel = 0.48 + (rng() - 0.5) * 0.08;
+
+      playSnare(ctx, drumBus, noiseBuf, barStart + beat * 1 + snareLayback, snare1Vel);
+      playSnare(ctx, drumBus, noiseBuf, barStart + beat * 3 + snareLayback, snare2Vel);
+
+      // Ghost Snares (soft offbeat taps)
+      if ((section === "variation" || isPeak || rng() < 0.3) && rng() < 0.5) {
+        const ghostPositions = pick(rng, [[1.75], [3.75], [1.75, 3.75]]);
+        ghostPositions.forEach((gBeat) => {
+          const gt = barStart + gBeat * beat + (rng() - 0.5) * 0.008;
+          const gVel = 0.09 + rng() * 0.08;
+          playSnare(ctx, drumBus, noiseBuf, gt, gVel);
+        });
+      }
+
+      // 3. Hi-Hats (Swing + Hand Accent Curve + Micro-jitter)
+      const hatBaseVol = isBreakdown ? 0.11 : 0.18;
+      const accentCurve = [1.0, 0.5, 0.8, 0.45, 0.9, 0.55, 0.75, 0.4];
+
+      for (let eighth = 0; eighth < 8; eighth++) {
+        const isOff = eighth % 2 === 1;
+        const swingOffset = isOff ? swing * beta(beat) : 0;
+        const microJitter = (rng() - 0.5) * 0.008;
+        const t = barStart + eighth * (beat / 2) + swingOffset + microJitter;
+        const vel = hatBaseVol * accentCurve[eighth] * (0.8 + rng() * 0.4);
+        const open = rng() < 0.07 && isOff && !isBreakdown;
+        playHat(ctx, drumBus, noiseBuf, t, vel, open);
+      }
+
+      // Turnaround Drum Fills on bar 4/8/12...
+      const isTurnaround = (b + 1) % 4 === 0;
+      if (isTurnaround && rng() < 0.65 && !isBreakdown) {
+        const fillType = pick(rng, ["hatRoll", "doubleKick", "ghostSnare"]);
+        if (fillType === "hatRoll") {
+          [3.25, 3.5, 3.75].forEach((hBeat, idx) => {
+            const ht = barStart + hBeat * beat + (rng() - 0.5) * 0.004;
+            playHat(ctx, drumBus, noiseBuf, ht, 0.10 + idx * 0.03, false);
+          });
+        } else if (fillType === "doubleKick") {
+          playKick(ctx, drumBus, barStart + beat * 3.75, 0.65);
+        } else if (fillType === "ghostSnare") {
+          playSnare(ctx, drumBus, noiseBuf, barStart + beat * 3.75, 0.20);
+        }
+      }
+    } else if (section === "intro" || section === "outro") {
+      // Gentle soft hat in intro/outro for subtle pulse
+      for (let eighth = 0; eighth < 8; eighth += 2) {
+        const t = barStart + eighth * (beat / 2) + (rng() - 0.5) * 0.008;
+        playHat(ctx, drumBus, noiseBuf, t, 0.06 + rng() * 0.03, false);
+      }
     }
   }
 
   return await ctx.startRendering();
 }
 
-// Tile the rendered loop to the requested length using overlap-add so the
-// reverb/release tail of each loop flows into the next, then lay continuous
-// (non-repeating) tape hiss and vinyl crackle over the whole thing.
-function assembleTrack(plan, loopBuf) {
-  const sr = loopBuf.sampleRate;
-  const totalSamples = Math.ceil(plan.duration * sr);
-  const hop = Math.round(plan.loopBody * sr); // advance per loop (body only)
+function assembleTrack(plan, rawBuf) {
+  const sr = rawBuf.sampleRate;
+  const totalSamples = rawBuf.length;
   const chans = [new Float32Array(totalSamples), new Float32Array(totalSamples)];
 
-  for (let k = 0; k < plan.numLoops; k++) {
-    const off = k * hop;
-    for (let ch = 0; ch < 2; ch++) {
-      const src = loopBuf.getChannelData(ch);
-      const dst = chans[ch];
-      const n = Math.min(src.length, totalSamples - off);
-      for (let i = 0; i < n; i++) dst[off + i] += src[i];
-    }
+  for (let ch = 0; ch < 2; ch++) {
+    const src = rawBuf.getChannelData(ch);
+    const dst = chans[ch];
+    for (let i = 0; i < totalSamples; i++) dst[i] = src[i];
   }
 
   addVinylTexture(chans, sr, plan.mood.crackle);
 
-  // Soft-clip to keep any overlap peaks in bounds, then build the AudioBuffer.
+  // Soft-clip output
   for (let ch = 0; ch < 2; ch++) {
     const d = chans[ch];
     for (let i = 0; i < d.length; i++) d[i] = Math.tanh(d[i] * 1.05) * 0.96;
@@ -596,8 +693,8 @@ async function generate() {
 
   try {
     const plan = composeTrack(seed, mood, minutes);
-    const loopBuf = await renderLoop(plan);
-    const buffer = assembleTrack(plan, loopBuf);
+    const rawBuf = await renderFullTrack(plan);
+    const buffer = assembleTrack(plan, rawBuf);
     state.buffer = buffer;
     state.plan = plan;
     state.offset = 0;
