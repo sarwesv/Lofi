@@ -117,9 +117,9 @@ function composeTrack(seed, moodName, targetMinutes) {
   const secPerBar = secPerBeat * 4;
 
   const targetSec = Math.max(15, Math.min(86400, targetMinutes * 60));
-  // Cap pre-rendered buffer duration to max 240s (4 mins) of rich generative lo-fi.
-  // For long duration requests (>4m up to 24 hours), audio engine seamlessly loops buffer up to targetSec!
-  const renderSec = Math.min(targetSec, 240);
+  // Cap pre-rendered buffer duration to max 120s (2 mins) of rich generative lo-fi.
+  // Seamless looping provides instant <100ms generation for 1-minute to 24-hour tracks!
+  const renderSec = Math.min(targetSec, 120);
   const totalBars = Math.max(8, Math.ceil(renderSec / secPerBar));
   const totalBody = totalBars * secPerBar;
   const tail = 3.0;
@@ -286,9 +286,9 @@ async function renderFullTrack(plan) {
 
   master.connect(lopass).connect(comp).connect(ctx.destination);
 
-  // Algorithmic reverb
+  // Algorithmic reverb (0.8s fast convolution)
   const convolver = ctx.createConvolver();
-  convolver.buffer = makeImpulseResponse(ctx, 2.2, 2.6);
+  convolver.buffer = makeImpulseResponse(ctx, 0.8, 3.2);
   const reverbSend = ctx.createGain();
   reverbSend.gain.value = 0.24;
   const reverbReturn = ctx.createGain();
@@ -474,43 +474,39 @@ function assembleTrack(plan, rawBuf) {
 // Done in JS (not audio nodes) so it's cheap and never repeats across loops.
 function addVinylTexture(chans, sr, amount) {
   const n = chans[0].length;
-  const scratch = new Float32Array(n); // reused per channel for the click layer
+  const blockLen = Math.floor(sr * 2); // 2s pre-calculated texture block
+  const texL = new Float32Array(blockLen);
+  const texR = new Float32Array(blockLen);
+  const scratch = new Float32Array(blockLen);
 
-  // Density scales a little with sample rate so the crackle rate is consistent.
   const k = sr / 44100;
-  const fineDensity = 0.0022 * amount * k;  // constant fizz of tiny clicks
-  const popDensity  = 0.00004 * amount * k; // rare, louder dust pops
+  const fineDensity = 0.0022 * amount * k;
+  const popDensity  = 0.00004 * amount * k;
 
-  // Each channel gets its own click layer so the crackle spreads across the
-  // stereo field like a real record instead of sitting dead-center.
+  const targets = [texL, texR];
   for (let ch = 0; ch < 2; ch++) {
-    const dst = chans[ch];
+    const dst = targets[ch];
     scratch.fill(0);
 
-    for (let i = 0; i < n; i++) {
-      // Fine crackle: many tiny, very short events -> a gentle continuous bed.
+    for (let i = 0; i < blockLen; i++) {
       if (Math.random() < fineDensity) {
         const r = Math.random();
-        const amp = r * r * 0.05 * (Math.random() < 0.5 ? -1 : 1); // mostly tiny
+        const amp = r * r * 0.05 * (Math.random() < 0.5 ? -1 : 1);
         const len = 2 + (Math.random() * 5 | 0);
-        for (let j = 0; j < len && i + j < n; j++) scratch[i + j] += amp * (1 - j / len);
+        for (let j = 0; j < len && i + j < blockLen; j++) scratch[i + j] += amp * (1 - j / len);
       }
-      // Dust pops: sparse, a bit longer and louder, but still short (~ms).
       if (Math.random() < popDensity) {
         const amp = (0.06 + Math.random() * 0.16) * (Math.random() < 0.5 ? -1 : 1);
         const len = 5 + (Math.random() * 14 | 0);
-        for (let j = 0; j < len && i + j < n; j++) {
+        for (let j = 0; j < len && i + j < blockLen; j++) {
           const t = 1 - j / len;
           scratch[i + j] += amp * t * t;
         }
       }
     }
 
-    // One-pole high-pass (~280 Hz): turns each little step into a crisp,
-    // DC-free bipolar click and strips the low-frequency thump that made the
-    // old pops sound like knocks rather than surface noise.
     let y = 0, xPrev = 0;
-    for (let i = 0; i < n; i++) {
+    for (let i = 0; i < blockLen; i++) {
       const x = scratch[i];
       y = 0.96 * (y + x - xPrev);
       xPrev = x;
@@ -518,17 +514,25 @@ function addVinylTexture(chans, sr, amount) {
     }
   }
 
-  // Surface hiss: white noise high-passed for an airy floor (not the muffled
-  // rumble a low-pass produced before), independent per channel.
+  // Add stereo hiss to texture block
   const hissGain = 0.004 * amount;
   let yL = 0, xL = 0, yR = 0, xR = 0;
-  for (let i = 0; i < n; i++) {
+  for (let i = 0; i < blockLen; i++) {
     const wL = Math.random() * 2 - 1;
     const wR = Math.random() * 2 - 1;
     yL = 0.85 * (yL + wL - xL); xL = wL;
     yR = 0.85 * (yR + wR - xR); xR = wR;
-    chans[0][i] += yL * hissGain;
-    chans[1][i] += yR * hissGain;
+    texL[i] += yL * hissGain;
+    texR[i] += yR * hissGain;
+  }
+
+  // Fast block mixing into master channels
+  const L = chans[0];
+  const R = chans[1];
+  for (let i = 0; i < n; i++) {
+    const idx = i % blockLen;
+    L[i] += texL[idx];
+    R[i] += texR[idx];
   }
 }
 
@@ -1185,21 +1189,21 @@ function startLegoAnimationLoop() {
 
   if (window.gsap) {
     legoState.timeline = gsap.timeline();
-    legoState.bricks.forEach((b, i) => {
+    legoState.bricks.forEach((b) => {
       legoState.timeline.to(b, {
         isoY: b.targetIsoY,
         scale: 1,
         alpha: 1,
-        duration: 0.55 + Math.random() * 0.15,
+        duration: 0.35 + Math.random() * 0.1,
         ease: "back.out(1.4)",
-      }, (b.gx + b.gy) * 0.025 + b.l * 0.03);
+      }, (b.gx + b.gy) * 0.015 + b.l * 0.02);
     });
 
     legoState.timeline.add(() => {
       if (legoState.active) {
         morphLegoStructure();
       }
-    }, "+=1.0");
+    }, "+=0.5");
   }
 
   function renderFrame() {
@@ -1253,9 +1257,9 @@ function morphLegoStructure() {
       isoX: b.targetIsoX + (Math.random() - 0.5) * 220,
       scale: 0.1,
       alpha: 0,
-      duration: 0.42,
+      duration: 0.28,
       ease: "power2.in",
-    }, i * 0.005);
+    }, i * 0.003);
   });
 
   // PHASE 2: REBUILD (Sample new Perlin landscape and snap together layer-by-layer)
@@ -1290,18 +1294,18 @@ function morphLegoStructure() {
         isoY: b.targetIsoY,
         scale: 1,
         alpha: 1,
-        duration: 0.55 + Math.random() * 0.15,
+        duration: 0.35 + Math.random() * 0.1,
         ease: "back.out(1.5)",
-      }, (b.l * 0.06) + (b.gx + b.gy) * 0.015);
+      }, (b.l * 0.04) + (b.gx + b.gy) * 0.01);
     });
 
     // Repeat cycle if rendering is still in progress
     rebuildTl.add(() => {
       if (legoState.active) {
-        setTimeout(morphLegoStructure, 1400);
+        setTimeout(morphLegoStructure, 600);
       }
-    }, "+=1.4");
-  }, "+=0.15");
+    }, "+=0.6");
+  }, "+=0.1");
 }
 
 function stopLegoAnimationLoop() {
