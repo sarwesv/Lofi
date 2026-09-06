@@ -226,23 +226,31 @@ h1 .note {
 }
 .dd-opt.selected::before { opacity: 1; }
 .dd-opt:hover, .dd-opt.active { background: rgba(150, 195, 255, 0.16); }
-.opt input[type="range"] {
-  -webkit-appearance: none; appearance: none; width: 100%; height: 8px;
-  border-radius: 999px; background: rgba(120, 175, 255, 0.16); outline: none; margin: 12px 0 4px;
-  border: 1px solid rgba(140, 190, 255, 0.12);
+.time-input-group {
+  display: flex; align-items: center; gap: 4px;
+  padding: 10px 14px; border-radius: 16px;
+  border: 1px solid var(--panel-brd); color: var(--text);
+  background: rgba(24, 48, 88, 0.45);
+  backdrop-filter: blur(12px) saturate(150%);
+  -webkit-backdrop-filter: blur(12px) saturate(150%);
+  transition: border-color .2s, background .2s;
 }
-.opt input[type="range"]::-webkit-slider-thumb {
-  -webkit-appearance: none; appearance: none; width: 22px; height: 22px; border-radius: 50%;
-  background: linear-gradient(135deg, var(--accent), var(--accent2)); cursor: pointer;
-  border: 3px solid rgba(255, 255, 255, 0.55);
-  box-shadow: 0 3px 10px rgba(40, 80, 150, 0.45);
+.time-input-group:focus-within {
+  border-color: var(--accent);
+  background: rgba(32, 60, 105, 0.55);
 }
-.opt input[type="range"]::-moz-range-thumb {
-  width: 22px; height: 22px; border-radius: 50%;
-  background: linear-gradient(135deg, var(--accent), var(--accent2)); cursor: pointer;
-  border: 3px solid rgba(255, 255, 255, 0.55);
-  box-shadow: 0 3px 10px rgba(40, 80, 150, 0.45);
+.time-input-group input[type="number"] {
+  width: 32px; background: transparent; border: none; outline: none;
+  font-family: var(--font-body); font-size: 14px; font-weight: 600;
+  color: var(--text); text-align: center;
+  -moz-appearance: textfield;
 }
+.time-input-group input[type="number"]::-webkit-outer-spin-button,
+.time-input-group input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none; margin: 0;
+}
+.time-sep { font-weight: 700; color: var(--muted); font-size: 14px; }
+.time-unit { font-size: 11px; color: var(--muted); margin-left: auto; text-transform: lowercase; font-weight: 600; }
 
 .status { margin-top: 16px; font-family: var(--font-display); font-size: 13.5px; font-weight: 600; color: var(--muted); min-height: 18px; }
 .status.working { color: var(--accent2); }

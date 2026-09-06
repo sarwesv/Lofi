@@ -498,8 +498,8 @@ const els = {
   moodTrigger: document.getElementById("moodTrigger"),
   moodMenu: document.getElementById("moodMenu"),
   moodCurrent: document.getElementById("moodCurrent"),
-  length: document.getElementById("lengthRange"),
-  lenLabel: document.getElementById("lenLabel"),
+  minInput: document.getElementById("minInput"),
+  secInput: document.getElementById("secInput"),
   vinyl: document.getElementById("vinyl"),
   progressWrap: document.getElementById("progressWrap"),
   progressBar: document.getElementById("progressBar"),
@@ -589,7 +589,7 @@ async function generate() {
 
   const seed = (Math.random() * 0xffffffff) >>> 0;
   const mood = els.moodDropdown.dataset.value;
-  const minutes = parseFloat(els.length.value);
+  const minutes = getRequestedMinutes();
 
   // Let the UI paint the "working" state before the heavy render.
   await new Promise((r) => setTimeout(r, 30));
@@ -722,13 +722,46 @@ function download() {
   }, 30);
 }
 
-/* ------------------------------- Events ---------------------------------- */
+/* ------------------------------- Time Inputs ----------------------------- */
 
-function updateLenLabel() {
-  els.lenLabel.textContent = fmtTime(parseFloat(els.length.value) * 60);
+function getRequestedMinutes() {
+  let mins = parseInt(els.minInput.value, 10);
+  let secs = parseInt(els.secInput.value, 10);
+  if (isNaN(mins) || mins < 0) mins = 0;
+  if (isNaN(secs) || secs < 0) secs = 0;
+
+  if (secs >= 60) {
+    mins += Math.floor(secs / 60);
+    secs = secs % 60;
+    els.minInput.value = mins;
+    els.secInput.value = secs.toString().padStart(2, "0");
+  }
+
+  const totalSec = mins * 60 + secs;
+  const clampedSec = Math.max(15, Math.min(3600, totalSec));
+  return clampedSec / 60;
 }
-els.length.addEventListener("input", updateLenLabel);
-updateLenLabel();
+
+function sanitizeTimeInputs() {
+  let mins = parseInt(els.minInput.value, 10);
+  let secs = parseInt(els.secInput.value, 10);
+
+  if (isNaN(mins) || mins < 0) mins = 0;
+  if (mins > 60) mins = 60;
+
+  if (isNaN(secs) || secs < 0) secs = 0;
+  if (secs >= 60) {
+    mins += Math.floor(secs / 60);
+    secs = secs % 60;
+    if (mins > 60) mins = 60;
+  }
+
+  els.minInput.value = mins;
+  els.secInput.value = secs.toString().padStart(2, "0");
+}
+
+els.minInput.addEventListener("blur", sanitizeTimeInputs);
+els.secInput.addEventListener("blur", sanitizeTimeInputs);
 
 /* ---------------------- Custom themed mood dropdown ---------------------- */
 

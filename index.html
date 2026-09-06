@@ -70,10 +70,15 @@
               </ul>
             </div>
           </div>
-          <label class="opt">
-            <span>Length · <b id="lenLabel">2:00</b></span>
-            <input type="range" id="lengthRange" min="0.5" max="6" step="0.05" value="2" />
-          </label>
+          <div class="opt">
+            <span>Length</span>
+            <div class="time-input-group">
+              <input type="number" id="minInput" min="0" max="60" value="2" aria-label="Minutes" placeholder="2" />
+              <span class="time-sep">:</span>
+              <input type="number" id="secInput" min="0" max="59" value="00" aria-label="Seconds" placeholder="00" />
+              <span class="time-unit">m : s</span>
+            </div>
+          </div>
         </div>
 
         <div class="status" id="status">Ready when you are.</div>
