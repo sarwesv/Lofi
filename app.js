@@ -644,14 +644,13 @@ function makeImpulseResponse(ctx, seconds, decay) {
 
 async function audioBufferToWavAsync(buffer, targetDuration, onProgress) {
   const numCh = buffer.numberOfChannels;
-  const sampleRate = buffer.sampleRate;
-  const bufFrames = buffer.length;
-
-  // Maximum standard uint32 16-bit stereo WAV limit is ~6.5 hours (23,400 seconds)
-  // Exports full requested duration up to 6.5 hours in CD 44.1kHz stereo quality!
+  const origRate = buffer.sampleRate;
   const requestedSec = targetDuration || buffer.duration;
-  const wavSec = Math.min(requestedSec, 23400);
-  const totalFrames = Math.max(bufFrames, Math.ceil(wavSec * sampleRate));
+
+  // Use 22.05kHz for multi-hour sessions (>1h) for vintage vinyl warmth and 2x faster downloads; 44.1kHz for <= 1h.
+  const exportSampleRate = requestedSec > 3600 ? 22050 : origRate;
+  const wavSec = Math.min(requestedSec, 23400); // 6.5 hours max uint32 WAV limit
+  const totalFrames = Math.ceil(wavSec * exportSampleRate);
 
   const bytesPerSample = 2;
   const blockAlign = numCh * bytesPerSample;
@@ -669,18 +668,20 @@ async function audioBufferToWavAsync(buffer, targetDuration, onProgress) {
 
   writeStr("RIFF"); writeU32(36 + dataSize); writeStr("WAVE");
   writeStr("fmt "); writeU32(16); writeU16(1); writeU16(numCh);
-  writeU32(sampleRate); writeU32(sampleRate * blockAlign);
+  writeU32(exportSampleRate); writeU32(exportSampleRate * blockAlign);
   writeU16(blockAlign); writeU16(16);
   writeStr("data"); writeU32(dataSize);
   chunks.push(headerBuf);
 
   const channels = [];
   for (let c = 0; c < numCh; c++) channels.push(buffer.getChannelData(c));
-  const loopFrames = Math.max(1, bufFrames - Math.floor(sampleRate * 3.0));
+  const bufFrames = buffer.length;
+  const loopFrames = Math.max(1, bufFrames - Math.floor(origRate * 3.0));
 
-  // Encode PCM data in 400,000-frame chunks (~9 seconds / 1.6 MB per chunk)
-  const chunkSize = 400000;
+  // Encode PCM data in 300,000-frame chunks (~1.2 MB per chunk)
+  const chunkSize = 300000;
   let framesProcessed = 0;
+  const stepRatio = origRate / exportSampleRate;
 
   while (framesProcessed < totalFrames) {
     const currentChunkFrames = Math.min(chunkSize, totalFrames - framesProcessed);
@@ -688,8 +689,9 @@ async function audioBufferToWavAsync(buffer, targetDuration, onProgress) {
     let ptr = 0;
 
     for (let i = 0; i < currentChunkFrames; i++) {
-      const globalIdx = framesProcessed + i;
-      const srcIdx = globalIdx < bufFrames ? globalIdx : (globalIdx % loopFrames);
+      const globalFrame = framesProcessed + i;
+      const srcFrame = Math.floor(globalFrame * stepRatio);
+      const srcIdx = srcFrame < bufFrames ? srcFrame : (srcFrame % loopFrames);
       for (let c = 0; c < numCh; c++) {
         let s = Math.max(-1, Math.min(1, channels[c][srcIdx]));
         pcmData[ptr++] = s < 0 ? s * 0x8000 : s * 0x7fff;
@@ -962,12 +964,20 @@ async function download() {
   els.download.disabled = true;
   setStatus("Encoding WAV (0%)… 💾", "working");
 
+  // Revoke any previous Blob URL from prior downloads to prevent memory leaks
+  if (state.lastDownloadUrl) {
+    try { URL.revokeObjectURL(state.lastDownloadUrl); } catch (e) {}
+    state.lastDownloadUrl = null;
+  }
+
   try {
     const blob = await audioBufferToWavAsync(state.buffer, state.totalDuration, (pct) => {
       setStatus(`Encoding WAV (${pct}%)… 💾`, "working");
     });
 
     const url = URL.createObjectURL(blob);
+    state.lastDownloadUrl = url; // Keep active so Chrome's download manager never gets revoked mid-transfer!
+
     const a = document.createElement("a");
     const safe = state.plan.title.replace(/\s+/g, "_");
     const dur = state.totalDuration || state.buffer.duration;
@@ -981,8 +991,7 @@ async function download() {
     document.body.appendChild(a);
     a.click();
     a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 10000);
-    setStatus("Downloaded! 🎉 Enjoy your lo-fi session.", "done");
+    setStatus("Download started! 🎉 Enjoy your lo-fi session.", "done");
   } catch (err) {
     console.error(err);
     setStatus("Failed to encode WAV file. Try a slightly shorter duration.", "");
