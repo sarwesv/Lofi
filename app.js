@@ -642,21 +642,26 @@ function makeImpulseResponse(ctx, seconds, decay) {
 
 /* ------------------------------ WAV encoder ------------------------------ */
 
-function audioBufferToWav(buffer, targetDuration) {
+async function audioBufferToWavAsync(buffer, targetDuration, onProgress) {
   const numCh = buffer.numberOfChannels;
   const sampleRate = buffer.sampleRate;
   const bufFrames = buffer.length;
 
-  const maxWavSec = targetDuration ? Math.min(targetDuration, 600) : buffer.duration;
-  const numFrames = Math.max(bufFrames, Math.ceil(maxWavSec * sampleRate));
+  // Maximum standard uint32 16-bit stereo WAV limit is ~6.5 hours (23,400 seconds)
+  // Exports full requested duration up to 6.5 hours in CD 44.1kHz stereo quality!
+  const requestedSec = targetDuration || buffer.duration;
+  const wavSec = Math.min(requestedSec, 23400);
+  const totalFrames = Math.max(bufFrames, Math.ceil(wavSec * sampleRate));
 
   const bytesPerSample = 2;
   const blockAlign = numCh * bytesPerSample;
-  const dataSize = numFrames * blockAlign;
-  const bufferSize = 44 + dataSize;
+  const dataSize = totalFrames * blockAlign;
 
-  const arr = new ArrayBuffer(bufferSize);
-  const view = new DataView(arr);
+  const chunks = [];
+
+  // Chunk 0: Standard 44-byte WAV header
+  const headerBuf = new ArrayBuffer(44);
+  const view = new DataView(headerBuf);
   let p = 0;
   const writeStr = (s) => { for (let i = 0; i < s.length; i++) view.setUint8(p++, s.charCodeAt(i)); };
   const writeU32 = (v) => { view.setUint32(p, v, true); p += 4; };
@@ -667,20 +672,44 @@ function audioBufferToWav(buffer, targetDuration) {
   writeU32(sampleRate); writeU32(sampleRate * blockAlign);
   writeU16(blockAlign); writeU16(16);
   writeStr("data"); writeU32(dataSize);
+  chunks.push(headerBuf);
 
   const channels = [];
   for (let c = 0; c < numCh; c++) channels.push(buffer.getChannelData(c));
   const loopFrames = Math.max(1, bufFrames - Math.floor(sampleRate * 3.0));
 
-  for (let i = 0; i < numFrames; i++) {
-    const srcIdx = i < bufFrames ? i : (i % loopFrames);
-    for (let c = 0; c < numCh; c++) {
-      let s = Math.max(-1, Math.min(1, channels[c][srcIdx]));
-      view.setInt16(p, s < 0 ? s * 0x8000 : s * 0x7fff, true);
-      p += 2;
+  // Encode PCM data in 400,000-frame chunks (~9 seconds / 1.6 MB per chunk)
+  const chunkSize = 400000;
+  let framesProcessed = 0;
+
+  while (framesProcessed < totalFrames) {
+    const currentChunkFrames = Math.min(chunkSize, totalFrames - framesProcessed);
+    const pcmData = new Int16Array(currentChunkFrames * numCh);
+    let ptr = 0;
+
+    for (let i = 0; i < currentChunkFrames; i++) {
+      const globalIdx = framesProcessed + i;
+      const srcIdx = globalIdx < bufFrames ? globalIdx : (globalIdx % loopFrames);
+      for (let c = 0; c < numCh; c++) {
+        let s = Math.max(-1, Math.min(1, channels[c][srcIdx]));
+        pcmData[ptr++] = s < 0 ? s * 0x8000 : s * 0x7fff;
+      }
+    }
+
+    chunks.push(pcmData.buffer);
+    framesProcessed += currentChunkFrames;
+
+    // Yield to main thread periodically to keep UI fluid and report percentage progress
+    if (framesProcessed % (chunkSize * 4) === 0 || framesProcessed >= totalFrames) {
+      if (onProgress) {
+        const pct = Math.floor((framesProcessed / totalFrames) * 100);
+        onProgress(pct);
+      }
+      await new Promise((r) => setTimeout(r, 0));
     }
   }
-  return new Blob([arr], { type: "audio/wav" });
+
+  return new Blob(chunks, { type: "audio/wav" });
 }
 
 /* ------------------------------- UI wiring ------------------------------- */
@@ -928,22 +957,38 @@ function seek(clientX) {
   }
 }
 
-function download() {
+async function download() {
   if (!state.buffer) return;
-  setStatus("Encoding WAV…", "working");
-  setTimeout(() => {
-    const blob = audioBufferToWav(state.buffer, state.totalDuration);
+  els.download.disabled = true;
+  setStatus("Encoding WAV (0%)… 💾", "working");
+
+  try {
+    const blob = await audioBufferToWavAsync(state.buffer, state.totalDuration, (pct) => {
+      setStatus(`Encoding WAV (${pct}%)… 💾`, "working");
+    });
+
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     const safe = state.plan.title.replace(/\s+/g, "_");
+    const dur = state.totalDuration || state.buffer.duration;
+    const hr = Math.floor(dur / 3600);
+    const min = Math.floor((dur % 3600) / 60);
+    const sec = Math.floor(dur % 60);
+    const timeLabel = hr > 0 ? `${hr}h${min.toString().padStart(2, "0")}m` : `${min}m${sec.toString().padStart(2, "0")}s`;
+
     a.href = url;
-    a.download = `lofi_${safe}_${state.plan.bpm}bpm.wav`;
+    a.download = `lofi_${safe}_${timeLabel}_${state.plan.bpm}bpm.wav`;
     document.body.appendChild(a);
     a.click();
     a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-    setStatus("Downloaded! 🎉 Enjoy the vibes.", "done");
-  }, 30);
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+    setStatus("Downloaded! 🎉 Enjoy your lo-fi session.", "done");
+  } catch (err) {
+    console.error(err);
+    setStatus("Failed to encode WAV file. Try a slightly shorter duration.", "");
+  } finally {
+    els.download.disabled = false;
+  }
 }
 
 /* ------------------------------- Time Inputs ----------------------------- */
